@@ -1,282 +1,579 @@
 # Design
 
-> 本文的事实基础有两个来源，文中逐处标注：
-> **[实测]** = 2026-09-22 在本机（macOS 15.5 / Darwin 25.5.0、git 2.50.1、Node 22.19）
-> 对已安装的四个 harness 与 git 行为的直接测量；
-> **[桌面稿]** = 先行设计稿 `git-ai-commit-design.md`（基于官方文档核实，作者环境未安装这四个
-> harness，另在 git 2.51.1 的临时仓库验证过 7 种提交场景的 tree 一致性）。
-> 两份来源在 harness 调用面上相互印证：桌面稿引用的 `--safe-mode`、`--tools`、`--json-schema`、
-> `--effort`、codex 的 `-c` 配置键、pi 的四个 `--no-*`、opencode 的 `--file/--agent/--format`
-> 经 **[实测]** 逐一确认在本机存在。
+> **来源标注**
+>
+> - **[实测]**：本机直接测量，环境见 Context 的"环境基线"。延迟与成本为 2026-09-22 单次采样；
+>   git 行为为 2026-09-23 逐条命令加标记复测。
+> - **[桌面稿]**：先行设计稿 `git-ai-commit-design.md`，作者基于官方文档核实，并在 git 2.51.1 临时仓库中验证过
+>   7 种提交场景的 tree 一致性；作者环境未安装四个 harness。该文件不在本仓库中，本文引用它的地方已把所需论据
+>   写进正文。
+> - **[评审]**：第一轮 `docs/openspec-review-ai-commit-message.md`（R01–R12）；第二轮
+>   `docs/openspec-review-ai-commit-message-v2.md`（B01–B06 及其第 5 节）。
+>
+> **修订记录**
+>
+> - 2026-09-23 第一轮：按 [评审] R01–R12 修订。另外更正四处原稿错误：
+>   ① D3 的 `post-index-change` 触发矩阵行错位——`[ "$2" = 1 ]` 守卫实际会过滤掉全部 `git add`；
+>   ② D10 "claude、opencode、pi 本身是 Node 程序"未经验证，且不成立；
+>   ③ "生成后复核快照，变化即丢弃或中止"的前提不成立——本次提交的内容在 hook 调用前已由 Git 固定（D4）；
+>   ④ 沿用 [桌面稿] 的"来源为模板时一律保留"会使本工具在本机永不生成——本机全局配置了空模板（D2）。
+> - 2026-09-23 第二轮：按 [评审] B01–B06 修订。预热过滤改用 plumbing 并禁止外部转换（D3）；预热授权改为执行时读取（D15）；
+>   收窄显式消息与预热的承诺（D3、D15）；正文判断改为白名单（D2）；后端版本分三种状态（D7）；后台任务发送前复核、
+>   锁按代次号释放（D16）；只写入本仓库默认 hooks 目录，两类 hook 分用启动模板（D18）。
 
 ## Context
 
 动机见 `proposal.md` - Why。此处只记录塑造架构的约束。
 
-**四个 harness 的非交互调用面高度同构** [实测]：
-
-| harness | 一次性出参 | 抑制副作用 | 不落 session | 取结果 |
-| --- | --- | --- | --- | --- |
-| claude | `-p` | `--restricted` / `--tools ""` + `--disallowedTools 'mcp__*'` | `--no-session-persistence` | `--output-format json` 的 envelope |
-| codex | `exec` | `-s read-only` + `-c features.shell_tool=false` 等 | `--ephemeral` | `-o <file>` 写最后一条消息 |
-| pi | `-p` | `-nt --no-extensions --no-skills --no-prompt-templates --no-context-files` | `--no-session` | stdout 文本 |
-| opencode | `run` | 专用 agent + `permission: deny` | （独立运行） | `--format json` 事件流 |
-
-**真机延迟与成本** [实测]：
+### 环境基线 [实测]
 
 ```
-claude -p --model haiku   完整 prompt   14s     （空 prompt 6.7s，即冷启动占一半）
-opencode run              完整 prompt    7s     input 13858 tokens / cost $0.0021
-codex exec                              10s     失败：usage limit
-pi -p                                    6s     失败：底层 openai-codex，同一份额度
-node 冷启动                                60-68ms
-git write-tree                             33ms
+macOS（Darwin 25.5.0）    git 2.50.1    Node 22.19.0
+claude 2.1.280    codex 0.156.0    opencode 1.18.32    pi 0.87.1
 ```
 
-opencode 报告的 13858 input tokens 中，本次 prompt 仅约 200 tokens，其余为 harness 自注入的
-system prompt 与工具定义 —— 这是 harness 路线的固有税，也是延迟的主要来源之一。
+- 四个 harness 中，claude、codex、opencode 是 Mach-O 原生二进制，只有 pi 是 `#!/usr/bin/env node` 脚本。
+- 这些 CLI 会自动更新：codex 在设计期间从 0.155.1（2026-09-22）自动升级到了 0.156.0（2026-09-23）。
+- 本机全局配置 `commit.template = ~/.stCommitMsg`（0 字节，SourceTree 的惯例配置）。因此本机**每一次**
+  `git commit` 传给 `prepare-commit-msg` 的来源参数都是 `template`。
+- 第一版的合同测试基线就是上述版本；兼容性判定见 D7。第一版支持 macOS（已验证）与 Linux（目标平台，待验证）。
 
-**后端可用性是常态问题而非异常** [实测]：`pi auth check` 显示 anthropic / openai / google 均
-`not_ready`，唯一 `ready` 的 `openai-codex` 恰好额度耗尽；codex 直接报
-`You've hit your usage limit ... try again at Sep 27th`。设计当日四个后端有两个不可用。
+### 延迟与成本 [实测，2026-09-22，单次采样]
+
+输入是约 694 字节的 prompt（约 200 tokens），其中含一段 9 行的 diff；计时边界为 CLI 进程的墙钟时间。
+
+```
+claude -p --model haiku     14s     空 prompt 为 6.7s，冷启动约占一半
+opencode run                 7s     input 13858 tokens / cost $0.0021
+codex exec                  10s     失败：usage limit
+pi -p                        6s     失败：底层 provider 为 openai-codex，与 codex 共用额度
+node 空脚本启动         60–68ms
+git write-tree             33ms
+```
+
+opencode 报告的 13858 input tokens 中，本次 prompt 只有约 200，其余是 harness 自己注入的 system prompt 与工具定义，
+这是 harness 路线的固有开销。样本数为 1，以上数字只作量级参考，不作为性能承诺。
+
+### 后端可用性 [实测，2026-09-22]
+
+`pi auth check` 显示 anthropic、openai、google 均为 `not_ready`，唯一 `ready` 的 `openai-codex` 额度已耗尽；
+codex 报 `You've hit your usage limit`。**codex 与 pi 在本机共用同一账户额度**，换 harness 不等于换账户（D8）。
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- 常规 `git commit` 的感知延迟接近于零，而非把 7~14s 摊到每一次提交上。
-- 生成结果始终只描述**本次真正提交的内容**，与最终 commit tree 一致。
-- 任何后端故障都不改变 git 的既有行为：退回人工填写，不阻塞提交。
-- 增加一个新 harness 的成本接近于"加一段配置"，而非"写一个新模块"。
+- 开启预热且命中缓存时，常规提交无需等待模型；未开启或未命中时，同步生成受统一总预算约束（D17）。
+- 生成的消息描述的正是 Git 本次写入的 commit tree。
+- 生成失败时的行为按条件确定（D14），不因后端不同而不同。
+- 后端之间共享执行器、解析器与校验器；后端专属逻辑只限于参数映射、能力探测与错误分类（D7）。
 
 **Non-Goals:**
 
-- 不追求模型输出的语义正确性保证。结构化输出只能约束格式；默认保留编辑步骤。
-- 不做常驻守护进程。预热是一次性的后台子进程。
-- 不把本地 hook 当作策略边界 —— 规范的强制执行属于 `commit-msg` 与 CI。
-- 不支持同一 worktree 的并发提交。
+- 不保证语义正确。结构化输出只约束格式；默认保留人工编辑步骤。
+- 不做常驻守护进程；预热是一次性的后台任务。
+- 本地 hook 不是策略边界；提交规范的强制执行属于 CI。
+- 不提供操作系统级隔离：后端与用户是同一个 OS 身份（D11）。
+- 不支持同一 worktree 内的并发操作（D4 的竞态窗口）。
+- 不做编辑期间的一致性复核——这不是推迟，而是不需要（D4）。
+- 开启预热后，不承诺普通 `git commit -m` 一定不产生预热请求（D15）。
 
 ## Decisions
 
 ### D1. harness CLI 作为推理后端，而非直连 API
 
-复用四个 CLI 已持有的订阅认证，不引入 API key 管理。代价是冷启动与冗余 system prompt
-（见 Context 的实测数字）。
+复用四个 CLI 已持有的订阅认证，不引入 API key 管理。代价是冷启动与冗余 system prompt（见 Context）。
 
-**备选**：直连 Anthropic / OpenAI API，同样任务约 700 tokens、1~2s。被否的理由是它与"复用
-已有 harness"的出发点相悖，且引入密钥管理。架构上保留为 adapter 表中的一类后端，不在第一版实现。
+**备选**：直连 Anthropic / OpenAI API，同样的任务约 700 tokens、1~2s。否决的理由是它与"复用已有 harness"的
+出发点相悖，并且要引入密钥管理。第一版不实现。
 
-### D2. 入口选 `prepare-commit-msg`
+### D2. 入口是 `prepare-commit-msg`；判断依据是消息文件内容，而不是命令行
 
-此时默认消息文件已创建、编辑器尚未打开，hook 可直接改写 Git 传入的文件 [桌面稿]。
-`commit-msg` 留给最终格式检查。注意 `--no-verify` **不会**跳过 `prepare-commit-msg` [桌面稿]，
-因此必须提供独立的单次跳过开关（环境变量），不能指望 `--no-verify`。
+此时默认消息文件已经创建、编辑器尚未打开，hook 可以直接改写 Git 传入的文件。`--no-verify` 不会跳过
+`prepare-commit-msg`（githooks 文档），所以需要独立的跳过开关：环境变量 `AI_COMMIT_SKIP=1`。
 
-### D3. 预热：`post-index-change` + `$2` 守卫
+hook 只收到三个参数：消息文件路径；来源（`message`、`template`、`merge`、`squash`、`commit` 或空）；来源为 `commit` 时的
+提交 oid。它**看不到**原始命令行，不知道用户有没有传 `--allow-empty`、`-s`、`-v`、`--no-edit`。可用的判断依据只有：
+来源参数、Git 状态路径、`GIT_EDITOR`、消息文件内容，以及 base/target tree。
 
-这是本设计相对 [桌面稿] 的主要增量 —— 桌面稿是纯同步的，其缓存只在重试时生效。
+**来源为 `template` 不等于"用户已准备好消息"** [实测]。本机的全局 `commit.template` 指向空文件，所以每一次普通提交的
+来源都是 `template`。照 [桌面稿] "模板一律保留"的规则，本工具在本机永远不会生成。
 
-git 各命令对 `post-index-change` 的触发情况 [实测]：
+**是否已有正文，按白名单判断**。来源为空与来源为 `template` 两种情况统一适用：去掉注释行，以及 scissors 行及其以下的部分后，
+**只有**两类行可以忽略——空行，以及与 Git 自动添加格式一致的 `Signed-off-by: 姓名 <邮箱>` 行。只要还剩其他任何非空行，
+就视为已有用户正文：保留原样，不调用后端。
 
-```
-                     触发?   args        
-git add               ✓     [0 1]   <- 唯一稳定的「索引被更新」
-git reset             ✓     [1 0]
-git commit            ✓     [0 0]
-touch + git status    ✓     [0 0]
-git checkout -b       ✓     [0 0]
-git stash             ✓     [0 0]
-git status（干净）     ✗      —
-git diff --cached     ✗      —
-```
+> 修订（[评审] B05）：上一版把"符合尾注语法的行"一律当作可忽略，但 conventional 标题 `fix: …` 同样符合 `Token: Value`
+> 语法，模板里已有的标题会被降为正文，还会触发一次生成。改为白名单后，`fix: …`、`feat: …`、`说明: …`、
+> `Co-authored-by: …` 等冒号行一律视为用户正文。
 
-`$1`=工作区被更新、`$2`=索引被更新。`[ "$2" = 1 ]` 一个判断即可把 `git add` 从噪音中精确
-挑出，连 `git commit` 自身触发的那次也被过滤。
+- 已知限制：`git commit --trailer "…"` 追加的尾注同样被视为用户正文，此时保守地不生成。
+- 注释字符取 `core.commentChar`（默认 `#`）；取值为 `auto` 或无法确定时，保守地保留原内容。
+- **不能依赖 `git interpret-trailers --parse` 识别签名行** [实测]：`git commit -s` 生成的消息文件中只有一行 `Signed-off-by:` 时，
+  它会被当作标题段而不是尾注段，`--parse` 输出为空。
 
-**备选**：包一层 `git` shell function。被否，因为 IDE 的 Stage 按钮、lazygit、以及 coding agent
-自己执行的 `git add` 全部绕过 shell wrapper；`post-index-change` 是 git 进程级 hook，无此问题。
+**生成的消息插入到文件最前面**，其后的原有内容（签名行、注释、scissors 行及其下方的 diff）一律保留 [实测]：
 
-**备选**：监听 `.git/index` 的文件系统守护进程。被否，成本高于收益。
+- `git commit -s`：插入后最终消息为"标题 + 空行 + `Signed-off-by`"，签名行保留。
+- `git commit -v`：scissors 行 `# ------------------------ >8 ------------------------` 及其下方的 diff 由 Git 自己剥除，
+  最终消息只含插入的内容。
+- `git commit --no-edit`：hook 收到的 `GIT_EDITOR` 为 `:`，消息文件为空；hook 写入的消息被直接提交。这就是本工具的
+  免编辑用法，不需要另设 `--yes` 之类的开关。
+- 顺带观察：`git commit -s` 时编辑器原样保存（只剩签名行），Git 会以 `Aborting commit due to empty commit message`
+  自行中止。
 
-### D4. 快照用 `git write-tree`，且必须使用**有效 index**
+### D3. 预热触发：`post-index-change` 只作提示，授权与过滤在 shell 层完成
 
-`git commit -a` 与 `git commit -- <path>` 使用临时 index 而非 `.git/index`，Git 通过
-`GIT_INDEX_FILE` 传给 hook [桌面稿，并经其 git 2.51.1 实测：`-a` 走 `index.lock`，pathspec
-提交走另一临时 index]。硬编码 `.git/index` 会描述错误的文件集合。
+> 修订：第一轮去掉了错误的 `[ "$2" = 1 ]` 守卫。第二轮修正过滤中的差异检查会执行外部转换、授权只在安装时判断两个问题
+> （[评审] B01、B02）。
 
-`git write-tree` 本身尊重 `GIT_INDEX_FILE`，因此只要不覆盖该环境变量，正确性自动成立，并顺带
-产生一个理想的降级行为：
-
-```
-普通 git commit       warm 时 tree=T1，commit 时仍为 T1   -> 命中缓存，约 120ms
-git commit -a         warm 时 T1，commit 时临时 index=T2  -> 未命中，同步生成
-git commit -- path    同上 = T3                           -> 未命中，同步生成
-```
-
-预热天然只服务常规提交，其余自动退回同步路径，无需额外分支逻辑。
-
-首次提交（unborn HEAD）的基准是**按仓库对象格式计算的空 tree**，用
-`git hash-object -t tree /dev/null` 取得，不得硬编码 SHA-1 的 `4b825dc6...` [桌面稿]。
-
-### D5. 缓存键用 tree oid，不用 diff 文本摘要
-
-同一 staged 内容在不同 git 配置下的 diff 文本哈希 [实测]：
+`$2` 在文档中的语义是"skip-worktree 位可能已变化"（`man githooks`），不是"index 被更新"。逐条命令加标记复测 [实测]：
 
 ```
-               diff 文本哈希         write-tree
-默认            392aabef6568ab5b     cbd8b9b6b2b3f00f...
-diff.noprefix   91e2ba878bc5c524 ✗变  cbd8b9b6b2b3f00f... ✓
-diff.context=1  d6304e9769a036b4 ✗变  cbd8b9b6b2b3f00f... ✓
+                              触发   参数
+git add（新文件 / 修改 / -u）    ✓    [0 0]
+git restore --staged            ✓    [0 0]
+git rm --cached                 ✓    [0 0]
+git reset（mixed）              ✓    [0 1]
+git checkout -b                 ✓    [1 0]
+git commit                      ✓    [0 0]    在 HEAD 更新之前触发
+git write-tree                  ✓    [0 0]    本工具自身的调用也会触发
+touch 后 git status             ✓    [0 0]    只刷新 stat 也会写 index
+git status（无变化）             ✗     —
+git diff --cached [--quiet]     ✗     —
 ```
 
-diff 文本受 `diff.noprefix`、`diff.context` 等用户配置污染，tree oid 不受影响。
+参数无法区分暂存与其他 index 写入，因此 hook **不读参数**，收到调用就视为"暂存内容可能变了"的提示，然后按下列顺序过滤。
+任意一项命中就以 0 退出，不启动主程序：
 
-最终键（融合 [桌面稿] §8 的完整度与本设计的规范化）：
+1. 环境中存在 `AI_COMMIT_SKIP=1` 或重入标记 `AI_COMMIT_ACTIVE=1`。这一步不需要调用 git。本工具启动的所有子进程都带重入标记，
+   以此切断 write-tree 的自触发。
+2. **执行时授权**：`git config --bool aicommit.prewarm` 的值不是 `true`（D15）。每次触发都重新读取，不以"hook 已安装"
+   代表"仍获授权"。
+3. 仓库正处于 merge / rebase / cherry-pick / revert / sequencer 流程中。用一次 `git rev-parse --git-path …` 查询，**逐行读取**结果，
+   不依赖未加引号的分词——linked worktree 下返回的是绝对路径，可能含空格。
+4. 暂存区与 HEAD 无差异：`git diff-index --cached --quiet --no-textconv --no-ext-diff HEAD --`。退出码为 1 才继续；0 表示无差异；
+   其他任何值（包括首次提交时没有 HEAD 的 128）都视为出错，静默跳过预热，**不把出错当作"发现变化"**。首次提交因此不预热，
+   走同步路径。
+
+全部通过后，以脱离触发进程的方式启动主程序的后台入口，hook 立即返回。后台任务在去抖窗口结束后，还会再次确认授权并重新计算
+快照（D16）。
+
+**过滤中的差异检查同样不得执行外部转换**（[评审] B01，实测复现）。暂存区确有变化（v1 → v2），textconv 把两侧都转换成同一行时：
 
 ```
-key = sha256(baseTree ‖ targetTree ‖ profileId ‖ model ‖ effort
-             ‖ promptTemplateVersion ‖ configVersion ‖ redactionListVersion)
+                                                                  textconv 调用   退出码
+git diff --cached --quiet                                              2 次          0   <- 误判为无差异
+git diff --cached --quiet --no-textconv --no-ext-diff                  0 次          1
+git diff-index --cached --quiet HEAD --                                0 次          1
+git diff-index --cached --quiet --no-textconv --no-ext-diff HEAD --    0 次          1
 ```
 
-`promptTemplateVersion` / `configVersion` 使模板或规则变更后缓存自动失效；`profileId` / `model`
-使切换后端不会误命中他人的结果。
+采用 plumbing 加显式禁用参数的写法，与 D12 的正式采集一致。
 
-该键同时是预热的**去重器**：误触发时 tree 未变即命中，直接 noop，零成本。与 `$2` 守卫构成双保险。
+**原型实测**（[实测]，仓库路径含空格）。按上述顺序写成 shell 原型，并把主程序入口换成计数器：
 
-### D6. 输出协议：结构化 JSON + 本地 renderer
+```
+过滤正确性（走到后台启动步骤的次数）
+  预热关闭，git add                     0      预热开启，AI_COMMIT_SKIP=1 git add    0
+  预热开启，git add（有暂存变化）        1      预热开启，带重入标记的 write-tree     0
+  预热开启，合并流程中 git add           0      预热开启，暂存为空时 touch + status   0
 
-采纳 [桌面稿] §5。模型只返回：
+git add 平均耗时（每组先热身 3 次、再测 30 次，三组交替测两轮）
+  不装 hook                  34–35ms
+  装了 hook，预热关闭         48–49ms    +14ms（1 次 git 调用）
+  预热开启且全部通过          70–77ms    +36–42ms（3 次 git 调用 + 后台启动）
+```
+
+原型第一版的循环体以 `[ -e "$p" ] && exit 1` 结尾：没有匹配时这一句的状态为 1，整个循环也返回 1，触发了后面的 `|| exit 0`，
+过滤在差异检查之前就退出了，测出的开销偏低。这类问题只有用真实结构的 hook 测量才能发现，验收时要用计数入口核对启动次数（D18）。
+
+- **触发频率远高于暂存本身**：IDE 轮询 `git status` 刷新 stat 时也会写 index。关闭预热但保留 hook 时，每次触发多一次 git 调用
+  （+14ms）；`prewarm off` 会连 hook 一起移除（D15）。
+- **`git commit` 自身也会通过过滤，`git commit -m` 也不例外** [实测]：它在更新 HEAD 之前写 index，此时暂存区相对旧 HEAD 非空。
+  hook 无法分辨这次写入来自 `git add` 还是 `git commit -m`，二者触发时的环境变量完全相同 [实测]。父进程命令行能看出是 `commit`
+  （别名也以 `git commit` 的形式出现），但依赖解析进程列表太脆弱，否决。由此带来的承诺边界见 D15：`prepare-commit-msg` 对
+  显式消息一定不生成；确定不外发的唯一方式是 `AI_COMMIT_SKIP=1`。尽力而为的缓解是 D16 的"发送前重新计算快照"：提交在去抖窗口内
+  完成时，快照已与 HEAD 无差异，任务不发送。非 `-m` 的提交与 `prepare-commit-msg` 算出的是同一个 key，由 D16 的状态机避免重复请求。
+- **不承诺覆盖一切暂存方式**：不经原生 git 暂存的客户端（例如基于 libgit2 实现的工具）不会触发 hook，这些情况退回同步路径。
+
+**备选**：包一层 `git` shell function——IDE、终端 UI 和 coding agent 的暂存都会绕过它，否决。监听 `.git/index` 的守护进程——
+与"不做常驻进程"冲突，否决。
+
+### D4. 快照：hook 开始时捕获一次；提交内容此前已由 Git 固定
+
+**有效 index**：`git commit -a` 与 `git commit -- <path>` 使用临时 index，Git 通过 `GIT_INDEX_FILE` 传给 hook
+[桌面稿，实测复现]。`git write-tree` 遵循该变量，只要不覆盖它，拿到的就是正确的 tree。`GIT_INDEX_FILE` 可能是
+相对路径（普通提交时实测为 `.git/index`，相对于 hook 的工作目录），改变工作目录前必须先把它解析为绝对路径。
+
+**提交内容在 hook 调用前已固定** [实测，[评审] 第二轮复核]。hook 运行期间，另一个进程执行 `git add`：
+
+```
+普通 git commit      并发 git add 成功（rc=0）
+                     hook 开始 tree = c226844d    hook 结束 tree = fbfc2134（含新文件）
+                     最终 commit tree = c226844d  新文件不在本次提交中，提交后仍处于暂存状态
+git commit -a        并发 git add 失败（rc=128，index.lock 被持有）；hook 开始 = 结束 = 最终 commit tree
+git commit -- path   并发 git add 失败（rc=128）；起始快照等于最终 commit tree（[评审] 第二轮复核）
+```
+
+普通提交时，Git 在调用 `prepare-commit-msg` 之前已按内存中的 index 定下要提交的 tree，此后磁盘上 index 的变化属于下一次
+提交；`-a` 与路径提交则全程持有 index 锁。[评审] 第二轮对照了 git v2.50.1 `builtin/commit.c` 的 `prepare_to_commit`：它在调用
+`prepare-commit-msg` 之前更新内存中的 cache-tree。由此：
+
+- hook 开始时捕获一次 target tree 即可，这就是本次提交的 tree。
+- **生成之后不再对照磁盘 index 复核**。原稿（沿用 [桌面稿] §4）的"复核 → 变化即丢弃或中止"会把与本次提交无关的暂存
+  误判为失效，丢弃正确的候选，甚至中止合法的提交。
+- 编辑器停留期间的暂存同样进不了本次提交，因此不存在需要 `commit-msg` 复核的不一致。
+- 只剩一个竞态窗口：Git 读取 index 之后、hook 第一次执行 write-tree 之前（毫秒级）。落在这个窗口里的并发暂存会使捕获的
+  tree 与 Git 的不一致。这属于"同一 worktree 内并发操作"，不在支持范围内；升级支持的 git 版本时回归验证。
+
+**base tree**：HEAD 的 tree。unborn HEAD 时使用按仓库对象格式计算的空 tree（`git hash-object -t tree /dev/null`），
+不硬编码 SHA-1 的 `4b825dc6…`。
+
+**空提交**：base tree 等于 target tree 就是没有内容变化，保留原消息、不生成。hook 看不到 `--allow-empty`，也不需要看到：
+带 `--allow-empty` 但确实有暂存内容的提交照常生成。
+
+**缓存命中与提交方式无关**：临时 index 的路径不同不构成失效理由。`git commit -a` 在所有修改都已暂存时，tree 与预热时相同，
+应当命中（D5）。
+
+### D5. 缓存键：tree 标识内容，摘要标识生成参数
+
+diff 文本受用户配置影响 [实测]：同一暂存内容在默认、`diff.noprefix`、`diff.context=1` 三种配置下得到三个不同的 diff 哈希，
+tree oid 不变。所以内容身份用 tree oid：
+
+```
+key = sha256(
+    baseTree ‖ targetTree
+  ‖ digest(有效 profile：harness、provider、model、effort、后端可执行文件版本)
+  ‖ digest(有效生成规则：语言、格式、长度上限、输入预算、排除清单、scope 规则)
+  ‖ digest(历史样本：用于推断风格的提交 oid 列表)
+  ‖ promptTemplateVersion ‖ schemaVersion )
+```
+
+- 用规范化后的**内容摘要**，而不是 `profileId`、`configVersion`：同名 profile 换了 provider，key 随之改变。
+- 历史样本以提交 oid 进入摘要：同一个 base tree 可能来自不同的历史。
+- 摘要只覆盖非敏感字段。缓存条目里不保存 diff、凭证或 prompt 原文。
+- 条目记录实际产出的后端与模型、schemaVersion、候选和生成时间。读取时按当前 schema 重新校验，不合法就视为未命中并删除。
+- 回退后端产出的结果按**主 profile 的 key** 存储，并在条目里标注实际后端：用户下次仍以主 profile 发起，应当命中；
+  标注保证诊断时可见。
+
+### D6. 输出协议：结构化 JSON，允许拒绝，本地渲染
+
+模型只返回以下两种之一：
 
 ```json
-{ "type": "fix", "scope": "chat", "subject": "...", "body": ["...", "..."], "breakingChange": null }
+{ "type": "fix", "scope": "chat", "subject": "…", "body": ["…"], "breakingChange": null }
+{ "refusal": "差异只包含格式调整，无法判断变更意图" }
 ```
 
-`!` 与 `BREAKING CHANGE:` 由本程序的 renderer 依 `breakingChange` 字段统一生成，不由模型产出。
-人工 trailer 单独解析后合并，不允许模型新增作者身份、签名或未提供的 issue 编号。
+- **拒绝结果是合法输出**。模型证据不足时应返回它，系统据此转人工，而不必编造内容，或用非法结构来表达失败。
+- schema 约束：禁止额外字段；`type` 取配置允许的枚举（默认为 conventional 的 feat、fix、docs、style、refactor、perf、test、
+  build、ci、chore、revert）；`scope` 可空且为单行；`subject` 单行非空；`body` 为字符串数组，条数与单条长度有上限；
+  所有字段禁止控制字符；`body` 中不得出现尾注格式的行（`Signed-off-by:`、`Co-Authored-By:` 等），不得出现输入中不存在的
+  issue 编号——这两项都能在本地机械校验。
+- `!` 与 `BREAKING CHANGE:` 由 renderer 依 `breakingChange` 字段生成；消息文件中原有的签名行按 D2 的规则保留。
+- 传输：codex 用 `--output-schema`；claude 在支持的版本上用 `--json-schema` 并读取 `structured_output`，否则读取 envelope 的
+  `result` 再解析 JSON；pi 与 opencode 从文本中解析 JSON。
+- **兜底解析只允许剥掉最外层的代码围栏**，剥掉后必须是完整、合法的 JSON。截断的输出、普通文本、不完整的 JSON 一律判为
+  失败，不做修补。内容超长时走一次纠正，仍超长就失败，不做裁剪——裁剪会破坏原意。纠正至多一次，计入总预算（D17）。
 
-codex 用 `--output-schema` 原生约束；claude 在兼容版本上用 `--json-schema` 并读
-`structured_output`，否则读 envelope 的 `result` 再解析候选 JSON。对不支持 schema 的后端，
-保留"剥代码围栏 / 掐前言 / 长度裁剪"的文本兜底解析。
+[实测] `claude -p --output-format text` 的输出确实干净（36 字节），但纯文本无法区分"空结果"和"失败"，也无法可靠地生成
+breaking change 标记，因此不采用。
 
-**备选**：让模型直接输出成品文本。**[实测]** 表明 `claude -p --output-format text` 的输出确实
-干净（36 字节，无前言、无围栏、无 ANSI），但纯文本路径无法区分"空结果"与"调用失败"，也无法
-可靠生成 breaking change 标记。故采用结构化方案，文本解析降级为兜底。
+### D7. 共享执行器与解析器；后端专属逻辑是小型映射模块；版本分三种状态
 
-### D7. adapter 是配置表，不是每后端一个模块
+> 修订：第一轮撤回"`backend/` 下不存在 per-harness 文件"——规格约束的是行为，不是文件布局。第二轮增加兼容性三态
+> （[评审] 第二轮第 5 节）。
 
-四个后端的取值方式恰好落在三种策略上 [实测]：
+**共享部分**：进程执行器（参数数组、stdin 传输、超时、进程组清理、stderr 捕获）；四种传输解析（envelope、file、text、jsonl）；
+统一的候选校验。
 
-```
-claude    -> envelope    （--output-format json 的 result / structured_output）
-pi        -> text        （stdout 纯文本）
-codex     -> file        （-o <file>）
-opencode  -> jsonl       （事件流中最后一条 assistant text）
-```
+**后端专属部分**：参数映射、能力探测、错误分类，以及个别的运行时配置注入——opencode 的专用 agent 经
+`OPENCODE_CONFIG_CONTENT` 注入；pi 必须显式指定 provider 和模型 ID，避免模糊匹配在模型目录更新后选到别的模型。
 
-因此 `backend/` 下不存在 per-harness 文件：harness 定义是数据，解析器只有上述几类。新增后端
-= 新增一段配置 + 复用既有策略。
+**能力矩阵**（第一版合同测试基线）。标"已调用"的项做过真实调用；其余项只核实了参数存在（帮助文本或 `--strict-config`），
+效果待合同测试：
 
-harness / provider / model / reasoning effort 是**四个正交维度** [桌面稿] —— pi 与 opencode
-可连接不同 provider，切换 harness 不代表模型不变，effort 不得拼接进模型 ID。
+| | claude 2.1.280 | codex 0.156.0 | pi 0.87.1 | opencode 1.18.32 |
+|---|---|---|---|---|
+| 一次性调用 | `-p`（已调用） | `exec` | `-p` | `run`（已调用） |
+| 关闭内置工具 | `--tools ""` | `-s read-only`，`-c features.shell_tool=false` | `-nt` | 专用 agent，`permission: deny` |
+| 关闭 MCP | `--safe-mode`，`--strict-mcp-config` | `-c mcp_servers={}` | 不适用 | 专用 agent 配置（待核实） |
+| 关闭插件 / hook / 上下文文件 | `--safe-mode`（帮助文本列出 CLAUDE.md、skills、插件、hooks、MCP 等） | 待核实 | `--no-extensions` `--no-skills` `--no-prompt-templates` `--no-context-files` | `--pure`（外部插件） |
+| 不落 session | `--no-session-persistence` | `--ephemeral` | `--no-session` | 无此参数；调用后执行 `opencode session delete <id>` |
+| 结构化输出 | `--json-schema` | `--output-schema` | 无 | 无 |
+| 结果传输 | JSON envelope | `-o <file>` | stdout 文本 | JSONL，取最后一条 text 事件（已调用） |
+| 认证复用 | 订阅 OAuth（`--bare` 明确不读 OAuth；`--safe-mode` 的说明未提及认证，按 [桌面稿] 视为保留，待验证） | 订阅 OAuth | 取决于 provider | 取决于 provider |
 
-Profile 选择优先级 [桌面稿]：`--profile` → 环境变量 → `git config --local aicommit.profile`
-→ 本机默认。仓库共享文件只放提交规范，不放凭证，也不允许定义任意 shell 命令。
+**兼容性三态**：
 
-### D8. 默认开启 fallback 链与 doctor 探活
+| 状态 | 判定 | 是否调用 |
+|---|---|---|
+| 兼容 | 版本在合同测试覆盖的范围内，且矩阵中该后端没有"待核实"项 | 调用 |
+| 未验证 | 不满足"兼容"，但探测到全部必需的限制参数 | 默认调用，每次调用在诊断中注明；用户可在本机开启严格模式拒绝调用 |
+| 不兼容 | 缺少任一必需的限制参数 | 永不调用 |
 
-[桌面稿] §8 建议默认**不**开跨 profile fallback。本设计改为默认开启一条有序链（至多切换一次，
-计入总超时），依据是 Context 中"四个后端当日有两个不可用"的实测。失败原因仍需分类：配置错误
-不得靠轮流重试其他后端掩盖。`doctor` 默认不发模型请求，用各 CLI 自带的探活手段
-（如 `pi auth check --json`）。
+- "参数存在"最多只能让版本从"不兼容"变为"未验证"，不能变为"兼容"。
+- 默认允许调用"未验证"版本的理由：这些 CLI 自动更新很频繁（Context：codex 在设计期间自动升级了一次），默认拦截会让工具在
+  每次自动更新后停用。代价是：新版本若改变了某个限制参数的实际效果，要到下次合同测试才能发现，因此诊断中必须如实标注。
+- 严格模式拒绝调用、以及"不兼容"，都按配置问题处理，不触发回退（D8）。
 
-### D9. 中文标题按显示宽度约束
+### D8. 回退链默认关闭，只用本机显式配置
 
-[桌面稿] §5 的"不超过 72 个 Unicode 码点"对中文不适用：72 个汉字的显示宽度为 144 列。
-按 East Asian Width 计算，中文默认目标 ≤50 显示列（约 25 字）。该值同时满足 commitlint
-`header-max-length`（按 JS 字符串长度计，中文一字计 1）的 72 上限，两个约束同时通过。
+> 修订：原稿默认开启，与 harness-adapter 规格"必须由用户显式配置"矛盾。以规格为准。
 
-"学风格"与"定语言"必须分开表达：从 `git log` 推断的是**结构**（是否用 conventional 前缀、
-scope 习惯、是否带正文、祈使句还是名词短语），**语言由配置强制**，否则英文历史会把中文要求带偏。
+默认只使用一个选定的 profile。用户可以在本机配置有序的回退链；`install` 和 `doctor` 可以给出推荐配置，但不会根据已安装的 CLI
+自动授权跨服务发送。仓库共享配置不能定义回退链。一次生成至多切换一次后端。
+
+| 失败类型 | 允许回退 |
+|---|---|
+| 额度耗尽、限流 | 是 |
+| 网络错误、服务不可用、超时（在剩余总预算内） | 是 |
+| 未认证 | 是，诊断中提示需重新登录 |
+| 参数不兼容、版本不兼容或被严格模式拒绝、模型标识无效、其他配置错误 | 否，报告配置问题 |
+| 纠正一次后输出仍不合规 | 否 |
+| 模型返回拒绝结果 | 否，证据不足不会因为换后端而改变 |
+| 用户取消 | 否 |
+
+**harness 多样性不等于账户多样性** [实测]：codex 与 pi 共用 `openai-codex` 额度，从 codex 回退到走同一 provider 的 pi
+恢复不了可用性。`doctor` 推荐回退链时要识别并提示这种同源关系。
+
+### D9. 语言与长度：按完整 header 计算
+
+- 长度约束作用于**完整 header**，即 `type(scope)!: subject`。
+- 两项独立校验：
+  - 显示宽度 ≤ 72 列。按 East Asian Width 计算，CJK 字符与 emoji 计 2 列，组合字符计 0 列；保证 `git log --oneline`
+    在 80 列终端里不折行。
+  - 字符串长度 ≤ 72。默认按 Unicode 码点计，可配置为按 UTF-16 码元计，以便和 commitlint 等按 JS 字符串长度计数的工具一致。
+  - 仓库配置可以覆盖这两个上限。
+- prompt 中另给一个软目标：显示宽度 ≤ 50 列（带 `feat(scope): ` 前缀时，标题部分约 18 个汉字）。软目标不参与校验。
+- 语言由配置强制，默认中文。历史只用来推断结构：scope 的使用习惯、是否写正文、句式。第一版只输出 conventional 格式，
+  历史不决定是否加 type 前缀。仓库的显式配置优先于历史推断。
+- **历史样本**：取 HEAD 的 first-parent 历史中最近 20 条非 merge 提交，每条只包含标题，以及一个在本地算出的"该提交是否有正文"
+  标记；**不发送正文内容**（[评审] 第二轮第 5 节：只读标题无法推断"是否写正文"）。样本数和字节上限固定，并进入缓存键（D5）。
 
 ### D10. TypeScript / Node ≥22 / 零运行时依赖
 
-[桌面稿] §2 推荐 Go，理由是单文件二进制、避免 Android / iOS / Flutter / Java 仓库各装一套
-运行时。该理由在本项目的主要使用场景下不成立：claude、opencode、pi 三个 harness 本身即 Node
-程序，Node 已是事实前提。
+> 修订：原稿以"claude、opencode、pi 本身是 Node 程序，Node 已是事实前提"来否定 [桌面稿] 的 Go 方案。该论断未经验证，
+> 且不成立：claude、codex、opencode 都是 Mach-O 原生二进制，只有 pi 是 Node 脚本（见 Context）。
 
-选 Node ≥22 可直接使用 `util.parseArgs`、原生 fetch、`node:test`。零运行时依赖的具体兑现：
-配置用 JSON（省去 TOML 解析器）、schema 校验手写窄类型 parse（省去 zod）、East Asian Width
-自带范围表（省去 string-width）。esbuild 打包单文件 + shebang。
+选择 TypeScript 是项目负责人的决定。真实代价是：只用 claude、codex、opencode 的用户，需要为本工具单独安装 Node ≥22。
+[桌面稿] 推荐 Go 的理由（单文件二进制，避免在各类仓库环境中额外安装运行时）因此是成立的。缓解手段：需要免运行时分发时，
+用 `bun build --compile` 产出单文件二进制。
 
-启动开销不构成约束 [实测]：预热路径是 detach 后台，`git add` 不等待；同步命中路径
-`write-tree + rev-parse + node` 合计 120ms，相对 7~14s 的生成是 1% 噪音。但 60ms 是**空脚本**
-的数字，每多一个 require 都会抬高它 —— 这正是坚持零依赖的理由。
+- `doctor` 必须检查实际解析到的 Node 可执行文件及其版本，不能从"装了某个 harness"推断出来。
+- GUI 客户端执行 hook 时的 PATH 可能不含 nvm 等工具管理的 Node，所以安装器把解析到的 Node 绝对路径写进 hook（D18）。
+- Node ≥22 可以直接用 `util.parseArgs`、原生 fetch、`node:test`。零运行时依赖的做法：配置用 JSON（不需要 TOML 解析器），
+  schema 校验手写窄类型 parse（不需要 zod），East Asian Width 自带范围表（不需要 string-width）；esbuild 打包成单文件。
+- 零依赖的理由：node 空脚本启动 60–68ms [实测]，每多一个 require 都会抬高它。缓存命中路径的预算见 D17。
 
-需要单文件二进制分发时（例如交付给没有 Node 的团队），`bun build --compile` 是可行的后路。
+### D11. 副作用抑制：这是受限调用，不是隔离
 
-### D11. 只读 sandbox ≠ 禁用工具
+- **只读 sandbox 不等于禁用工具** [桌面稿]：安装环境中启用的 MCP、插件、生命周期 hook 仍可能加载。每个后端的开关见 D7 的
+  能力矩阵。
+- **这不是操作系统级隔离**。后端与用户是同一个 OS 身份，临时工作目录和清除 Git 环境变量都不会撤销它对用户文件的访问权限。
+  本设计不宣称后端"无法"写入仓库，只保证三点：不授予工具权限、不在参数中给出仓库路径、不继承指向仓库的 Git 环境。
+- **opencode 没有关闭会话持久化的参数**，它的认证信息也存放在数据目录中，隔离数据目录会同时丢掉认证。做法是：调用时用
+  `--title` 标记本工具的会话，调用结束后执行 `opencode session delete <id>`（id 取自事件流）。进程被超时取消时可能来不及删除，
+  由 `doctor` 按标题列出残留会话。
+- 版本缺少必需限制参数时，判为不兼容（D7），**不静默删掉限制参数继续调用**。
 
-[桌面稿] 的重要提醒。`--sandbox read-only` 不等于"无副作用"：该安装环境启用的 MCP、插件、
-生命周期 hook 仍会加载。因此每个 adapter 必须分别处理：claude 用 `--tools ""` 并
-`--disallowedTools 'mcp__*'`；pi 的 `-nt` 只关工具，扩展 / skills / prompt 模板 / AGENTS.md
-需要四个独立开关；opencode 用专用 primary agent 并把全局与 agent 两级 `permission` 均设为
-`deny`，通过 `OPENCODE_CONFIG_CONTENT` 注入运行时配置。
+### D12. 子进程环境与 diff 采集
 
-旧版本 CLI 缺少所需参数时，由 `doctor` 报不兼容，**不得静默删掉限制参数**。
+- 读取原仓库的 git 子进程必须**保留**Git 环境（否则拿不到有效 index）；运行后端的子进程必须**清除** `GIT_DIR`、
+  `GIT_INDEX_FILE` 等指向原仓库的变量，并在受控的临时目录中运行 [桌面稿]。两类子进程不共用环境处理逻辑。
+- 本工具启动的所有子进程（git 与后端）都带重入标记 `AI_COMMIT_ACTIVE=1`：git 子进程借此切断 hook 自触发（D3）；
+  后端子进程即使越权执行 `git commit`，触发的 hook 也会立即退出。
+- **任何差异检查都不执行外部转换** [实测]：porcelain 的 `git diff --cached` 默认会执行 textconv，加 `--quiet` 也一样（D3）；
+  plumbing 的 `git diff-tree` / `git diff-index` 默认不执行。正式采集一律用 plumbing 比较 base 与 target 两个 tree，并且仍显式
+  传入 `--no-textconv --no-ext-diff`（`git diff-tree` 接受这两个参数，已核实）。该规则同样适用于预热过滤（D3）。
+- 固定影响覆盖范围的参数（如重命名检测），不受用户 `diff.*` 配置影响。文件清单用 `-z` 按 NUL 分隔读取，不按行拆分路径。
+  把路径作为参数传给 git 时启用字面路径模式（`GIT_LITERAL_PATHSPECS=1`），避免被解释为 pathspec 通配。
+- 一律以参数数组启动进程，禁止 `sh -c`、`eval` 或拼接字符串来执行 diff 内容、模型输出或文件名。
 
-### D12. 子进程环境分两类处理
+### D13. 注入防护与秘密排除是两件独立的事
 
-[桌面稿] §4 末。读取原仓库的 git 子进程必须**保留** Git 环境（否则拿不到有效 index）；启动
-AI 的子进程必须**清理** `GIT_DIR` / `GIT_INDEX_FILE` 等指向原仓库的变量，并在受控临时目录中
-运行，避免其误操作正在提交的仓库。两类子进程不共用环境处理逻辑。
+- **注入防护**：diff 内容、文件名、分支名、历史提交消息一律作为待分析的数据呈现，不作为指令；prompt 中明确声明这一点。
+  "不得声称测试通过、线上问题已解决、性能已提升等无法从 diff 证实的结论"是 **prompt 层的约束**，本地无法机械判定，
+  不作确定性承诺。本地能校验的只有 D6 列出的格式与禁止项。
+- **秘密排除**：排除清单（默认包含环境变量文件、私钥、证书、密钥库）在构造 payload **之前**检查，并且：
+  - 新路径与重命名 / 复制的**源路径**任意一个匹配，就排除内容。例如 `.env → notes.txt` 不能只检查新路径，就把旧的秘密内容发出去。
+  - 被删除文件的旧内容同样适用。
+  - 被排除的文件仍以"发生了变化"的事实出现在输入中。
+- **特殊对象**：二进制文件只提供变化事实与大小；Git LFS 指针只报告"LFS 对象变化"；子模块只报告 gitlink 从旧 commit 到新
+  commit，不进入子模块读取内容。
+- 秘密排除与预算降噪（lockfile、生成物只给统计）是两份清单、两个目的。正则式脱敏不保证发现全部秘密，要向用户明示。
 
-进程一律以参数数组启动，禁止 `sh -c` / `eval` / 字符串拼接执行 diff、模型输出或文件名。
+### D14. 失败处理：先判断要不要生成，再按条件处理
 
-### D13. prompt 注入防护与秘密排除是两件独立的事
+> 修订：原稿与规格使用了无条件的"不阻塞提交"，和"无编辑步骤时中止"冲突。
 
-- **注入防护**：diff 内容、文件名、历史 commit 消息、分支名一律作为**待分析数据**呈现，
-  不作为指令。prompt 明确声明这一点，并禁止模型声称测试通过、线上问题解决或性能提升等
-  无法从 diff 证实的结论 [桌面稿]。
-- **秘密排除**：`.env` / `*.pem` / `*.key` / `*.keystore` / `*.jks` 等按内容排除，出发点是
-  不把密钥发往云端 —— 与 lockfile / 生成物"只给统计"的**预算降噪**是两份清单、两个目的。
-  正则脱敏不保证发现全部秘密，这一点需向用户明示。
+| 场景 | 行为 | hook 退出码 |
+|---|---|---|
+| 显式消息、重用消息、特殊 Git 操作、已有用户正文（D2）、空提交、跳过开关 | 不进入生成流程，消息文件不变 | 0 |
+| 需要生成、有编辑步骤，但后端失败、超时、输出不合规、模型拒绝或运行时路径失效 | 消息文件不变，输出一行诊断，交给编辑器 | 0 |
+| 需要生成、无编辑步骤（`GIT_EDITOR=:`），生成失败或运行时路径失效 | 中止提交，提示用 `-m` 或恢复编辑步骤 | 非 0 |
+| 用户取消（SIGINT / SIGTERM） | 中止本次提交，不重试、不回退 | 非 0 |
+
+- 因为"是否需要生成"先于一切判断，`git commit -m` 在无编辑器时不会被第三行误拦。
+- "无编辑步骤"只以 `GIT_EDITOR=:` 判断（githooks 文档：commit 类 hook 在命令不会打开编辑器时以该值调用；已在
+  `--no-edit` 下实测）。不承诺识别"自定义编辑器最终没有修改消息"之类的情况。
+- "运行时路径失效"指 hook 中记录的 Node 或脚本路径已不可用（例如 Node 被升级或移动），由 shell 模板在启动主程序之前判断（D18）。
+- 原稿中的"快照持续变化则中止"一行已删除，原因见 D4。
+
+### D15. 预热的启用、授权与承诺边界
+
+> 新增于第一轮（[评审] R06）；第二轮改为执行时授权，并收窄显式消息的承诺（[评审] B02、B04）。
+
+- **本机开关，默认关闭**：`git config aicommit.prewarm`（全局或仓库级的本机配置）。仓库共享配置文件中出现该项时会被拒绝——
+  不能替队友决定数据外发的时机。
+- **执行时授权**：授权以执行时读到的配置为准，不以 hook 是否安装为准。
+  - hook 每次触发都重新读取（D3 过滤 2），值不是 `true` 就退出。用户直接执行 `git config aicommit.prewarm false`，不重装、
+    不重启任何进程，下一次暂存即不再触发。
+  - 后台任务在去抖等待结束、真正发送之前再读取一次；此时已关闭就放弃，不发送（D16）。
+  - 已经发出的请求不可撤回；其结果照常写入缓存——缓存不专属于预热，前台同步生成也使用它。
+- **安装维护与授权分开**：`git ai-commit prewarm on|off` 在设置配置的同时安装或移除 `post-index-change`；`install` 在该项未设置时
+  交互式询问一次，非交互环境下保持关闭。hook 文件是否存在只影响开销（关闭但保留 hook 时每次 +14ms），不代表授权。
+- **关闭预热不等于卸载**：`prewarm off` 只移除 `post-index-change`，`prepare-commit-msg` 与缓存保持不变；`uninstall` 移除全部。
+- 首次开启时明确告知：暂存阶段就会发送 diff；之后改用 `-m`、使用跳过开关或放弃提交，都撤不回已发出的请求。
+- **显式消息与预热的边界**（[评审] B04）：
+  - 确定保证：`prepare-commit-msg` 对显式消息（`-m`、`-F`）一定不生成，也不启动主程序（D18）。
+  - 不作保证：开启预热后，普通 `git commit -m` 自身写 index 时可能触发预热（D3），本工具不承诺它一定不产生请求。
+    常见情况下提交在去抖窗口内完成，任务发送前重新计算快照时已无差异，不会发送（D16）；pre-commit hook 很慢时可能发送。
+    如果暂存阶段已为同一快照预热过，提交阶段不会为它新增请求。
+  - 需要确定不外发时：`AI_COMMIT_SKIP=1 git commit -m "…"`。`AI_COMMIT_SKIP=1` 同时关闭该进程内的预热触发与提交阶段的生成。
+- 预热在特殊 Git 流程中跳过（D3 过滤 3）。
+- 预热与前台共用本机回退链（若已配置）；不向终端输出任何内容；失败记为 key 的 `failed` 状态（D16）。
+
+### D16. 任务生命周期与并发
+
+> 新增于第一轮（[评审] R07）；第二轮补充发送前复核、按代次号释放锁与强制刷新的顺序（[评审] B02、B04 及第二轮第 5 节）。
+
+每个 key 处于四种状态之一：`absent → running → ready | failed`。
+
+**后台任务的执行顺序**：
+
+1. 被 hook 以脱离方式启动后，先等待去抖窗口。
+2. 窗口结束后重新确认：授权仍为开启（D15），跳过条件与特殊流程仍不成立（D3）。
+3. **重新计算快照**：base 取当前 HEAD 的 tree，target 取当前 index 的 tree。二者相同就退出——提交已在窗口内完成
+   （包括 `git commit -m`），或者暂存已被撤回。
+4. 以新快照计算 key，按下述规则获取生成权，然后发送、发布。
+
+这里的"发送前复核"与 D4 删除的"生成后复核"是两回事：后者试图用磁盘 index 否定本次提交的候选，前提不成立；前者只决定一个
+尚未发出的预热请求还该不该发，不影响任何提交的内容。
+
+**锁与代次号**：
+
+- 每个 key 有一个代次号。`<key>.lock` 以排他创建方式建立，写入 pid、启动时间与代次号；创建失败即表示已有任务。
+- **释放是"比较后删除"**：进程只在锁中的 pid 与代次号都与自己一致时才删除锁。旧任务的延迟清理不会释放新代次的锁。
+- **发布是"比较后替换"**：结果先写临时文件，确认该 key 的当前代次号仍等于自己的代次号，再以 rename 替换为 `<key>.json`。
+  代次号不一致的结果直接丢弃。
+- **失效锁回收**：锁中 pid 已不存在，或存活时间超过"总预算 + 余量"，视为失效，可以回收。
+
+**强制刷新**（`preview --refresh`）的顺序：① 原子地递增该 key 的代次号；② 向持有旧代次锁的进程发送终止信号，在有限时间内等待
+其退出；③ 旧锁已释放或被判定为失效后，以新代次号获取锁；④ 生成；⑤ 按"比较后替换"发布。旧任务即使晚于刷新完成，
+也因代次号不一致，既不能发布，也不能删锁。
+
+**并发与前台**：
+
+- 每个 worktree 至多一个后台生成任务，最新的快照优先：新触发的快照与正在运行的不同时，取消旧任务，新任务同样先等去抖窗口。
+- 前台（`prepare-commit-msg`）：`ready` 直接使用；同 key 为 `running` 时在自身预算内等待，不重复发请求；`absent` 或 `failed` 时
+  自行获取锁并同步生成。前台不受后台并发上限约束，也不干预其他 key 的任务。
+- **失败冷却**：`failed` 记录错误类别与时间；后台在冷却期内不重试同一 key；前台把 `failed` 当作 `absent`，尝试一次同步生成。
+- **容量**：每个 worktree 的条目数与保留天数有上限，发布新条目时顺带清理。
+- **卸载**：终止锁文件中登记的运行中任务，删除缓存目录。任务发布前检查 `prepare-commit-msg` 是否仍由本工具安装，已卸载就
+  丢弃结果，也不重建目录。
+
+### D17. 统一时间预算
+
+> 新增于第一轮（[评审] R12）；第二轮区分两类 hook 的开销边界（[评审] B06）。
+
+- **前台总预算默认 45s**（[桌面稿]），用单调时钟计时。其中包括：等待同 key 的后台任务、后端调用、至多一次格式纠正、
+  至多一次回退切换。**任何一步都不重置预算**。
+- 超时后取消后端进程组及其子进程，清理临时文件，按 D14 处理。
+- 后台任务同样受总预算约束；失效锁的判定阈值为总预算加余量。
+- **预热 hook 的同步开销预算 ≤ 50ms，只适用于 D3 的 shell 过滤路径**。原型实测：关闭预热但保留 hook 时 +14ms，全部通过时 +36–42ms。
+  实现后须用真实生成的 hook 重新测量。
+- `prepare-commit-msg` 在 shell 中直接放行无需生成的情形（D18），`git commit -m` 不承担主程序的启动开销。
+- 缓存命中路径的目标 ≤ 300ms（从 hook 启动到写入消息文件）。原稿"约 120ms"只是 write-tree、rev-parse 与空 node 进程的耗时之和，
+  是下限而不是实测，需在实现后测量。
+
+### D18. 安装：只写入本仓库的默认 hooks 目录；两类 hook 分用启动模板
+
+> 新增于第一轮（[评审] R11）；第二轮收窄到默认目录、拆分两类 hook 的模板、补充路径失效与重复安装的规则
+> （[评审] B03、B06 及第二轮第 5 节）。
+
+- **只写入本仓库自身的默认 hooks 目录**，即公共 Git 目录（`git rev-parse --git-common-dir`）下的 `hooks`。有效 hooks 目录
+  （`git rev-parse --git-path hooks`，遵循 `core.hooksPath`）与它不同时——无论 `core.hooksPath` 来自本地、全局还是系统配置——
+  一律按冲突处理。理由：全局 `core.hooksPath` 可以让互不相关的仓库共用同一个目录（[评审] B03 实测）。在仓库 A 安装会把入口
+  带到没有安装本工具的仓库 B，卸载则可能移除 B 正在使用的入口；只检查"目录在工作区之外"不足以排除这种情况。
+- 默认 hooks 目录由同一仓库的所有 worktree 共享 [实测]，安装与卸载的输出要说明这一点。
+- **写入条件**：有效 hooks 目录就是默认目录，并且目标 hook 文件不存在，或属于本工具且未被修改。
+- **冲突时**：不修改任何文件，报告冲突，并打印需要加到既有 hook 或管理器配置中的调用。
+- **归属判定**：本工具写入的 hook 文件带标记行，安装时记录内容哈希。**重复安装同样校验哈希**：带标记但哈希不符，说明被用户
+  改过，不覆盖并报告。卸载只删除带标记且哈希一致的文件；被用户改过的文件保留并报告。重复卸载什么也不做。
+- **两类 hook 使用不同的启动模板**（[评审] B06）：
+  - `prepare-commit-msg`：shell 先放行无需生成的情形——`AI_COMMIT_SKIP`、重入标记、来源为 `message` / `merge` / `squash` /
+    `commit`——直接以 0 退出，不启动主程序；其余情形 `exec "<Node 绝对路径>" "<脚本绝对路径>" hook prepare-commit-msg "$@"`，
+    由主程序完成正文判断（D2）、特殊流程检查与生成，并通过 `exec` 传播退出码。
+  - `post-index-change`：在 shell 内完成 D3 的全部授权与过滤，全部通过后才以脱离方式启动主程序的后台入口，然后以 0 退出。
+  - 两个模板都写入 Node 与脚本的绝对路径（D10），并正确转义。
+- **运行时路径失效**（例如 Node 被升级或移动）：由 shell 模板在启动主程序之前判断。`prepare-commit-msg` 按 D14 处理——
+  有编辑步骤时提示一行并以 0 退出，无编辑步骤（`GIT_EDITOR=:`）时以非零退出；`post-index-change` 静默以 0 退出。
+  `doctor` 报告失效，并给出修复方式（重新安装）。
+- **入口计数验收**（[评审] B06）：把主程序入口换成只计数的诊断程序。预热关闭、设置了跳过开关或重入标记、处于特殊 Git 流程、
+  暂存为空时，`post-index-change` 启动主程序的次数必须为零；`git commit -m` 时，`prepare-commit-msg` 启动主程序的次数也必须为零。
+- `post-index-change` 只在预热开启时安装（D15）。
+- **缓存目录**用 `git rev-parse --git-path ai-commit` 解析，每个 worktree 各自私有 [实测]。
+- 不修改任何一级的 `core.hooksPath`。
 
 ## Risks / Trade-offs
 
-- **预热在连续 `git add` 时重复生成** → `git add a; git add b; git add c` 产生三个不同 tree、
-  三次生成，前两次浪费（约 $0.002/次）。第一版接受；后续加延迟去抖（新请求重置计时器）。
-- **`post-index-change` 的 args 语义跨版本/平台可能不同** → 触发矩阵为 macOS git 2.50.1 实测。
-  以 tree 缓存作第二道保险：即便守卫失效，tree 未变即 noop。`doctor` 中加入该 hook 的行为探测。
-- **候选在生成期间失效** → 预热缓存可能任意陈旧，同步路径也有 7~14s 窗口。写入消息文件前复核
-  HEAD 与有效 index 的 tree；不一致则丢弃候选，至多重新生成一次 [桌面稿]。用户在编辑器停留
-  期间继续 stage 时，由 `commit-msg` 末端再复核，中止而**不**覆盖用户已编辑的文字。
-- **后端额度耗尽** → 已是实测事实而非假设。由 fallback 链 + fail-open + `doctor` 共同处理；
-  hook 内不发起登录、不等待额度恢复。
-- **diff 外泄** → 秘密排除清单 + 临时文件仅当前用户权限并及时清理 + 默认不记录原始 diff 或
-  完整 stdout。仍需用户知悉：提交内容会发送至所选后端。
-- **coding agent 提交时递归** → agent 执行 `git commit` 会再次拉起同种 harness。
-  `CLAUDECODE` 等环境标记已确认存在 [实测]；以内部重入标记 + 生成子进程不得提交代码为第一
-  原则；某些 harness 禁止嵌套会话时返回明确失败，不清除其保护变量。agent 已用 `-m` 提供消息
-  的情况本就不生成。
-- **GUI 客户端的 PATH 与 hook 执行** → 是否生效取决于该 GUI 是否执行 hooks、是否允许无消息
-  开始提交；安装器需诊断 GUI 环境的 CLI 路径，不能假设它继承交互式 shell 的 PATH [桌面稿]。
-- **失败时的 stderr 噪音** → codex 失败时会把完整 prompt（含整个 diff）回显到 stderr 两次
-  [实测]。adapter 必须吞掉 stderr，只提取错误行，否则提交失败瞬间终端会被 diff 刷屏。
+- **[预热提前外发数据]** → 默认关闭；首次开启时告知；仓库共享配置无权开启；执行时授权，关闭立即生效（D15）。
+- **[开启预热后 `git commit -m` 仍可能外发]** → 承诺收窄到可兑现的范围；发送前重新计算快照；`AI_COMMIT_SKIP=1` 是确定保证（D15、D16）。
+- **[hook 触发频繁（IDE 轮询 status）]** → 授权与过滤全在 shell 层完成：关闭但保留 hook 时每次 +14ms，全部通过时 +36–42ms（D3）。
+- **[`post-index-change` 的行为在不同版本间有差异]** → 不依赖参数；hook 只是提示，漏触发时退回同步路径；触发矩阵列入合同测试。
+- **[毫秒级快照竞态]** → 不支持同一 worktree 内的并发操作，文档中说明（D4）。
+- **[全局共享的 hooks 目录]** → 只写入本仓库的默认目录，其他情况一律按冲突处理（D18）。
+- **[未验证版本的限制参数语义变化]** → 诊断中如实标注"未验证"；可开启严格模式；每个基线版本跑合同测试（D7）。
+- **[后端额度耗尽、同源额度]** → 回退链需显式配置；`doctor` 识别同源关系（D8）。
+- **[diff 外泄]** → 秘密排除覆盖重命名源路径与删除；所有差异检查都禁用 textconv 与外部 diff；临时文件只允许当前用户访问；
+  默认不记录原始 diff 和后端完整输出（D3、D12、D13）。
+- **[后端失败时 stderr 回显 diff]** → 捕获并抑制后端 stderr，只呈现分类后的一行原因。实测 codex 失败时会把完整 prompt 回显两次。
+- **[递归调用]** → 全部子进程带重入标记（带标记的 write-tree 实测被过滤）；后端无工具权限，不能提交代码。
+  在 coding agent 会话中调用同种 CLI 本身不构成递归——本次会话内嵌套调用 `claude -p` 实测成功；若某后端拒绝嵌套，
+  按 D14 处理。coding agent 已用 `-m` 提供消息时本就不生成。
+- **[GUI 环境的 PATH]** → hook 中写入 Node 与脚本的绝对路径；路径失效时按 D14 处理，由 `doctor` 检查（D10、D18）。
+- **[全局 commit.template 使来源恒为 template]** → 按内容、以白名单判断是否已有正文（D2）。
+- **[opencode 会话残留]** → 调用后删除；被中断时可能残留，由 `doctor` 按标题列出（D11）。
 
 ## Migration Plan
 
-全新项目，无迁移负担。建议分两期交付：
+全新项目，没有迁移负担。按"同步路径 → 后端覆盖 → 可选预热"的顺序交付：
 
-1. **第一期**：同步路径打通 —— `prepare-commit-msg` + 有效 index 快照 + 四 adapter +
-   结构化输出 + fail-open + `doctor` / `preview` / `install`。此时体验等同于 [桌面稿] 的方案。
-2. **第二期**：叠加 `post-index-change` 预热与缓存。二者解耦：预热失效时系统自然退回第一期
-   行为，因此可独立开关、独立回滚。
+1. **同步路径**：`prepare-commit-msg` 及其 shell 模板、快照、消息文件处理（含 D2 的白名单）、schema 与 renderer、D14 的失败语义、
+   `preview`、`doctor`、原生 hooks 的安装与卸载。先用 fake adapter 加一个当前可用的真实后端（实测 claude 与 opencode 可用）打通。
+2. **后端覆盖**：其余后端、能力矩阵的合同测试、兼容性三态、回退链。
+3. **可选预热**：D15 的启用与授权语义、D3 的 shell 过滤、D16 的状态机与锁、D17 的开销预算。可以独立开关、独立回滚：
+   关闭预热即退回前两期的行为。
 
-卸载（`uninstall`）只移除本程序写入的内容，保留已有 hook 管理器生成的文件与调用链。
+**合同测试**（版本升级后必须重跑）：
+
+- git：`post-index-change` 触发矩阵；hook 期间并发暂存对提交内容的影响（普通、`-a`、路径提交）；`-s`、`-v`、`--no-edit`
+  与模板下的消息文件形态；worktree 与 `core.hooksPath` 下的路径解析。
+- 过滤与采集：配置了会留下标记的 textconv 与受信任的外部 diff 时，预热过滤与正式采集调用外部程序的次数都为零。
+- 授权与边界：开启并安装后直接关闭配置，随后的暂存不启动请求；用没有缓存、没有在途任务的 key，分别测普通 `git commit -m`
+  与带 `AI_COMMIT_SKIP=1` 的 `git commit -m` 的请求次数，与 D15 的承诺一致。
+- 安装：两个无关仓库共用全局 hooks 目录时，只在 A 安装，B 的提交与暂存不启动模型；A 卸载不影响 B；重复安装遇到用户改过的 hook
+  不覆盖。
+- 正文判断：空模板、纯注释模板、只有签名行时生成；`fix: …`、`feat: …`、`说明: …` 模板原样保留且不调用后端。
+- 入口计数：D18 的"入口计数验收"。
+- 后端：D7 能力矩阵中的每一项，特别是标为"待核实"的项；各种传输格式的正常、截断、非零退出样例。
 
 ## Open Questions
 
-- 预热去抖的具体窗口（500ms / 1.5s）需要按真实 `git add` 节奏测量后定，不影响 specs 与架构。
-- Windows 支持的优先级。原生 CLI 的进程启动与 Git for Windows 的 hook 环境需单独适配
-  [桌面稿]，第一版可先只保证 macOS / Linux。
-- 是否以及何时实现 D1 中保留的直连 API 后端。
+- 预热去抖窗口的具体时长（D16），需要按真实的 `git add` 节奏测量后确定。
+- 缓存容量与保留天数的具体数值（D16）。
+- 能力矩阵中"待核实"的项（codex 的插件与 hook 关闭方式、opencode 的 MCP 关闭方式、claude 在 `--safe-mode` 下的认证行为），
+  由合同测试确定。结果只影响对应后端的兼容性状态，不影响架构。
+- Linux 平台的验证。
