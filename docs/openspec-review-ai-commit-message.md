@@ -1,6 +1,6 @@
 # git-ai-commit OpenSpec 评审意见
 
-新版复审见 [第二轮评审](/Users/project/tools/git-ai-commit/docs/openspec-review-ai-commit-message-v2.md)。本文保留为第一轮历史记录，其中关于第三个 hook 的建议已在复审中校正。
+最新结论见 [第三轮评审](/Users/project/tools/git-ai-commit/docs/openspec-review-ai-commit-message-v3.md)，修订过程见 [第二轮评审](/Users/project/tools/git-ai-commit/docs/openspec-review-ai-commit-message-v2.md)。本文保留为第一轮历史记录，其中关于第三个 hook 的建议已在复审中校正。
 
 评审日期：2026-09-23
 

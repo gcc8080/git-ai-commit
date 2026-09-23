@@ -1,5 +1,7 @@
 # git-ai-commit OpenSpec 第二轮评审
 
+最新结论见 [第三轮评审](/Users/project/tools/git-ai-commit/docs/openspec-review-ai-commit-message-v3.md)。本文保留为第二轮历史记录，B01–B06 在第三轮已按最新设计关闭。
+
 评审日期：2026-09-23
 
 评审对象：`ai-commit-message`，基于提交 `20db258ce46d901cc6b131d571e90d22ae313a2b` 上尚未提交的 6 份修订文件。文件指纹见文末。
