@@ -398,6 +398,7 @@ MCP 诱饵服务器（一启动就写标记文件）、claude 的 SessionStart h
 
 - `doctor` 必须检查实际解析到的 Node 可执行文件及其版本，不能从"装了某个 harness"推断出来。
 - GUI 客户端执行 hook 时的 PATH 可能不含 nvm 等工具管理的 Node，所以安装器把解析到的 Node 绝对路径写进 hook（D18）。
+- 构建脚本与测试直接运行 TypeScript 源码，需要 Node ≥ 22.18（类型剥离从该版本起默认开启）；打包后的产物在 Node 22 上运行。
 - Node ≥22 可以直接用 `util.parseArgs`、原生 fetch、`node:test`。零运行时依赖的做法：配置用 JSON（不需要 TOML 解析器），
   schema 校验手写窄类型 parse（不需要 zod），East Asian Width 自带范围表（不需要 string-width）；esbuild 打包成单文件。
 - **git ≥ 2.31**（实施期补充）：路径查询依赖 `rev-parse --path-format=absolute`（2.31），配置读取依赖 `config --show-scope`（2.26）。
@@ -703,7 +704,13 @@ hook 时一致，shell 也不需要复刻主程序的判定逻辑。
   数据，目前没有；本机配置 `debounceMs` 可调。
 - （已决定）缓存容量：每个 worktree 200 条、保留 30 天（D16，条目实测约 300 字节）。
 - （已解决）能力矩阵中"待核实"的项已由 13.2 的合同测试核实，结果与由此做出的改正见 D7。
-- Linux 平台的验证（19.1，尚未完成）：实现阶段没有可用的 Linux 环境，测试与合同测试只在 macOS 上运行过。已按静态梳理处理两处
-  差异：进程命令行在有 `/proc` 的系统上读 `/proc/<pid>/cmdline`，否则用 `ps -ww`——procps 的 `ps` 在输出被重定向时可能截断，
-  位于命令行末尾的任务令牌一旦被截掉，活着的任务会被误判为已退出；git 版本低于 2.31 时拒绝安装（D10）。hook 模板只用 POSIX sh
-  语法（兼容 dash）。仍需在 Linux 上实际运行一遍。
+- Linux 平台的验证（19.1，尚未完成）：实现阶段没有可用的 Linux 环境（尝试的远程运行实际仍在这台 macOS 上执行）。测试与合同测试
+  只在 macOS 上运行过，另用 dash 作为 `/bin/sh` 跑过一遍全量测试。已按梳理处理的差异：
+  - 进程命令行：有 `/proc` 时读 `/proc/<pid>/cmdline`，否则用 `ps -ww`。procps 的 `ps` 在输出被重定向时可能截断，位于命令行末尾的
+    任务令牌被截掉后，活着的任务会被误判为已退出。
+  - 僵尸进程：进程组里只剩尚未被回收的僵尸时，`kill(-pgid, 0)` 仍报告组存在（Linux 上成功，macOS 上返回 EPERM，已实测）。在不回收
+    孤儿进程的容器里，接管与卸载会一直确认不了退出。现在 kill 表明组还在时，再确认组内有非僵尸成员（Linux 读 `/proc/<pid>/stat`，
+    其他系统用 `ps`）；测试中判断进程是否存活也改为识别僵尸。
+  - git 低于 2.31 时拒绝安装（D10）；hook 模板只用 POSIX sh 语法，诊断输出用 `printf`（dash 的 `echo` 会解释反斜杠）。
+  - 构建与测试需要 Node ≥ 22.18；集成测试在有 `/proc` 的系统上不依赖 procps，合同测试仍需要 `ps`。
+  仍需在 Linux 上实际运行一遍。

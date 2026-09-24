@@ -17,7 +17,7 @@
 | 项目 | 已验证版本 |
 |---|---|
 | 平台 | macOS（Linux 尚未验证） |
-| Node | 22.19.0（要求 ≥ 22） |
+| Node | 22.19.0（要求 ≥ 22.18） |
 | git | 2.50.1（要求 ≥ 2.31） |
 | claude | 2.1.281 |
 | codex | 0.156.1 |
@@ -31,7 +31,8 @@
 
 ### 前置条件
 
-- **Node ≥ 22**。pi 本身依赖 Node；claude、codex、opencode 是原生程序，只用这三个后端时需要另外安装 Node。
+- **Node ≥ 22.18**（构建脚本直接运行 TypeScript 源码）。pi 本身依赖 Node；claude、codex、opencode 是原生程序，只用这三个后端时
+  需要另外安装 Node。
 - **git ≥ 2.31**。
 - **至少一个已安装并登录的后端 CLI**：`claude`、`codex`、`pi` 或 `opencode`，并且能在终端里正常使用。
 
@@ -194,7 +195,9 @@ hook 里记录的是安装时 Node 与脚本的绝对路径。升级、切换或
 npm ci
 npm test                                   # 构建并运行单元测试与集成测试
 AI_COMMIT_CONTRACT=1 npm test              # 另外运行合同测试（真实调用本机的后端，会消耗额度）
-AI_COMMIT_PERF=1 node --test test/perf/    # 性能测量（单独运行）
+npm run build && AI_COMMIT_PERF=1 node --test --test-concurrency=1 "test/perf/*.test.ts"   # 性能测量（单独运行）
 ```
+
+合同测试观察后端子进程时依赖 `ps`（Linux 上需要安装 procps）；单元测试与集成测试在有 `/proc` 的系统上不依赖它。
 
 设计文档与任务清单在 `openspec/changes/ai-commit-message/`。
