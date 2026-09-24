@@ -18,6 +18,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { FIXTURES } from '../helpers/paths.ts'
+import { running } from '../helpers/proc.ts'
 import { execBackend, type ExecResult } from '../../src/backend/exec.ts'
 import { claudeArgs, claudeEnv } from '../../src/backend/claude.ts'
 import { codexArgs, codexSchema } from '../../src/backend/codex.ts'
@@ -155,7 +156,7 @@ function watchDescendants(): { setRoot: (pid: number) => void; stop: () => Map<n
   }
 }
 
-const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
+const alive = running
 
 /** 本测试绕过了 adapter，要自己清理 opencode 会话：删除 started 之后创建的、标题为本工具标记的会话。 */
 function cleanupOpencode(started: number): number {

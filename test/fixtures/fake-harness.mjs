@@ -20,7 +20,7 @@
 //   FAKE_CODEX_UNKNOWN_KEYS  codex --strict-config 探测时报告为未识别的配置键（逗号分隔）
 //   FAKE_HELP_OMIT 逗号分隔：--help 输出中省略的参数（用于模拟缺少限制参数的版本）
 import { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 
 const argv = process.argv.slice(2)
 // 未设置 FAKE_HARNESS 时按可执行文件名推断（测试里用名为 codex、pi 等的符号链接指向本文件）
@@ -145,7 +145,7 @@ function log() {
   try {
     othersAlive = readFileSync(process.env.FAKE_LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
       .filter((r) => r.scenario !== 'session' && typeof r.pid === 'number').map((r) => r.pid)
-      .filter((pid) => { try { process.kill(pid, 0); return true } catch { return false } })
+      .filter(running)
   } catch { /* 还没有日志 */ }
   const extra = process.env.FAKE_LOG_STDIN ? { stdin } : {}
   appendFileSync(process.env.FAKE_LOG, JSON.stringify({ harness, scenario: seq, argv, cwd: process.cwd(), cwdMode, env, stdinBytes: Buffer.byteLength(stdin), pid: process.pid, schema, othersAlive, at: Date.now(), ...extra }) + '\n')
@@ -209,6 +209,19 @@ function emitError(kind) {
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
+
+/** 进程仍在运行：已退出但尚未被回收的僵尸不算（kill(pid, 0) 会把它当作存在）。 */
+function running(pid) {
+  try { process.kill(pid, 0) } catch (err) { if (err.code !== 'EPERM') return false }
+  let state = ''
+  try {
+    const s = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    state = s.slice(s.lastIndexOf(')') + 2).split(' ')[0] ?? ''
+  } catch {
+    state = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim()
+  }
+  return state !== '' && !state.startsWith('Z')
+}
 
 switch (seq) {
   case 'candidate':

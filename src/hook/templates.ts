@@ -54,7 +54,8 @@ export function prepareCommitMsgTemplate(p: TemplateParams): string {
     `node=${shQuote(p.node)}`,
     `script=${shQuote(p.script)}`,
     'if [ ! -x "$node" ] || [ ! -f "$script" ]; then',
-    '  echo "ai-commit: 运行时路径已失效（$node），本次跳过生成；请重新执行 git ai-commit install" >&2',
+    // printf 而不是 echo：dash 的 echo 会解释反斜杠
+    `  printf 'ai-commit: 运行时路径已失效（%s），本次跳过生成；请重新执行 git ai-commit install\\n' "$node" >&2`,
     '  exit 0',
     'fi',
     `exec "$node" "$script" hook prepare-commit-msg --install-id ${shQuote(p.installId)} -- "$@"`,

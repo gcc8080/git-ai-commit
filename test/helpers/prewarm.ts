@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Repo } from './repo.ts'
 import { BUNDLE } from './paths.ts'
+import { allCommands } from './proc.ts'
 import { parseOwnership } from '../../src/hook/templates.ts'
 import { statePaths, type StatePaths } from '../../src/prewarm/store.ts'
 
@@ -31,8 +32,7 @@ export function stateOf(repo: Repo, installId: string): StatePaths {
 }
 
 function warmProcesses(installId: string): string[] {
-  const r = spawnSync('ps', ['-A', '-ww', '-o', 'command='], { encoding: 'utf8' })
-  return r.stdout.split('\n').filter((l) => l.includes(`warm --install-id ${installId}`))
+  return allCommands().filter((l) => l.includes(`warm --install-id ${installId}`))
 }
 
 /** 等待该安装的后台任务全部结束（包括 hook 刚启动、尚未出现在进程表中的那一小段时间）。 */

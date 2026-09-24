@@ -5,13 +5,14 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Sandbox } from '../helpers/repo.ts'
+import { running } from '../helpers/proc.ts'
 import { ROOT } from '../helpers/paths.ts'
 import {
   createLock, listLocks, prune, publish, readEntry, register, readRegistrations, releaseLock, removeLowerLocks, statePaths,
   updateRegistration, type Entry, type LockInfo, type StatePaths,
 } from '../../src/prewarm/store.ts'
 import { takeover, type Holder } from '../../src/prewarm/takeover.ts'
-import { processCommand } from '../../src/proc/identity.ts'
+import { groupAlive, processCommand, terminateGroup } from '../../src/proc/identity.ts'
 import { cacheKey, canonicalJson, type KeyInput } from '../../src/prewarm/key.ts'
 import { effectiveRules } from '../../src/config/rules.ts'
 import { SCHEMA_VERSION } from '../../src/output/schema.ts'
@@ -169,7 +170,7 @@ async function spawnHolder(sb: Sandbox, opts: { child?: boolean; ignoreTerm?: bo
   return { holder, childPid, token }
 }
 
-const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
+const alive = running
 const cleanupGroup = (pgid: number) => { try { process.kill(-pgid, 'SIGKILL') } catch { /* 已退出 */ } }
 const asHolder = (s: Spawned, over: Partial<Holder> = {}): Holder => ({ pid: s.holder.pid!, pgid: s.holder.pid!, token: s.token, startedAt: Date.now() - 60_000, kind: 'background', ...over })
 
@@ -246,4 +247,19 @@ test('进程命令行完整读出：位于长命令行末尾的令牌不被截�
   c.kill('SIGKILL')
   await new Promise((r) => setTimeout(r, 200))
   assert.equal(processCommand(c.pid!), null, '进程退出后返回 null')
+})
+
+test('进程组里只剩未被回收的僵尸进程时，视为已退出；终止它立即确认', async (t) => {
+  // 同步忙等期间事件循环被阻塞，Node 不会回收已退出的子进程：它会一直是僵尸，直到本测试函数交还控制权
+  const c = spawn(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' })
+  const pgid = c.pid!
+  const until = Date.now() + 1500
+  while (Date.now() < until) { /* 等子进程退出，但不回收 */ }
+  let killSaysExists = true
+  try { process.kill(-pgid, 0) } catch (err) { killSaysExists = (err as NodeJS.ErrnoException).code === 'EPERM' }
+  t.diagnostic(`kill(-pgid, 0) 对僵尸进程组的结果：${killSaysExists ? '仍存在' : '不存在'}`)
+  assert.equal(groupAlive(pgid), false, '只剩僵尸成员的进程组视为已退出')
+  const started = Date.now()
+  assert.equal(await terminateGroup(pgid), true)
+  assert.ok(Date.now() - started < 500, '不用等到超时')
 })

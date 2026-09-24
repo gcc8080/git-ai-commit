@@ -8,6 +8,7 @@ import { Sandbox, type Repo } from '../helpers/repo.ts'
 import { BUNDLE, FIXTURES } from '../helpers/paths.ts'
 import { writeMachineConfig } from '../helpers/setup.ts'
 import { writeShellHook } from '../helpers/hooks.ts'
+import { running } from '../helpers/proc.ts'
 import { cacheFiles, calls, cli, installWithPrewarm, readyEntries, sleep, stateOf, waitIdle } from '../helpers/prewarm.ts'
 
 const FAKE = join(FIXTURES, 'fake-harness.mjs')
@@ -54,7 +55,7 @@ function barrierDir(repo: Repo, keep: string[], name = 'barrier'): string {
 const arrivals = (dir: string, name: string) => readdirSync(dir).filter((f) => f.startsWith(`${name}.`) && !f.endsWith('.go')).length
 const reached = (dir: string, name: string) => arrivals(dir, name) > 0
 const release = (dir: string, name: string) => writeFileSync(join(dir, `${name}.go`), '')
-const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
+const alive = running
 
 // ---------- 基本流程与 18.2 ----------
 

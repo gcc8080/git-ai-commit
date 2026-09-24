@@ -6,15 +6,14 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Sandbox } from '../helpers/repo.ts'
+import { running } from '../helpers/proc.ts'
 import { FIXTURES } from '../helpers/paths.ts'
 import { execBackend } from '../../src/backend/exec.ts'
 import { execFailure } from '../../src/backend/classify.ts'
 
 const FAKE = join(FIXTURES, 'fake-harness.mjs')
 
-function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true } catch { return false }
-}
+const alive = running
 
 async function waitDead(pid: number, ms = 3000): Promise<boolean> {
   for (let t = 0; t < ms; t += 50) {

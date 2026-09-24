@@ -2,9 +2,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, chmodSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { running } from '../helpers/proc.ts'
 import { Sandbox, type Repo } from '../helpers/repo.ts'
 import { BUNDLE } from '../helpers/paths.ts'
 import { COUNTER, installPrepareHook, lineCount, writeMachineConfig } from '../helpers/setup.ts'
@@ -147,10 +148,18 @@ test('9.3 卸载时终止已登记的任务并确认退出', async (t) => {
   child.unref()
   const reg = join(repo.gitPath('ai-commit'), own.installId, 'tasks', `${token}.json`)
   writeFileSync(reg, JSON.stringify({ pid: child.pid, pgid: child.pid, token, phase: 'debounce', key: null, startedAt: Date.now() }))
-  const r = cli(repo, ['uninstall'])
+  // 异步执行卸载：本测试进程是这个"任务"的父进程，同步等待期间无法回收它，它会一直是僵尸
+  const started = Date.now()
+  const r = await new Promise<{ status: number | null; stderr: string }>((resolve) => {
+    const u = spawn(process.execPath, [BUNDLE, 'uninstall'], { cwd: repo.dir, env: sb.env(), stdio: ['ignore', 'ignore', 'pipe'] })
+    let stderr = ''
+    u.stderr!.on('data', (d) => { stderr += d })
+    u.on('close', (status) => resolve({ status, stderr }))
+  })
   assert.equal(r.status, 0, r.stderr)
-  await sleep(200)
-  assert.throws(() => process.kill(child.pid!, 0), '登记的任务已被终止')
+  assert.doesNotMatch(r.stderr, /未能确认退出/)
+  assert.ok(Date.now() - started < 3000, `卸载耗时 ${Date.now() - started}ms`)
+  assert.equal(running(child.pid!), false, '登记的任务已被终止')
 })
 
 // ---------- 9.4 GUI 环境 ----------
@@ -161,10 +170,13 @@ test('9.4 最小环境（env -i，PATH 中没有 node）：hook 仍能启动主�
   const count = join(sb.root, 'count.log')
   installPrepareHook(repo, { script: COUNTER })
   repo.write('x.txt', 'x\n'); repo.git(['add', '.'])
-  const r = spawnSync('/usr/bin/env', ['-i', 'PATH=/usr/bin:/bin', `HOME=${sb.home}`, `GIT_CONFIG_GLOBAL=${sb.globalConfig}`, 'GIT_CONFIG_NOSYSTEM=1', `COUNTER_FILE=${count}`,
+  // 最小 PATH 中放入测试所用 git 的目录（Linux 上较新的 git 可能装在 /usr/local/bin），但不特意放入 node 的目录
+  const gitDir = dirname(spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim())
+  const minimalPath = [...new Set([gitDir, '/usr/bin', '/bin'])].join(':')
+  const r = spawnSync('/usr/bin/env', ['-i', `PATH=${minimalPath}`, `HOME=${sb.home}`, `GIT_CONFIG_GLOBAL=${sb.globalConfig}`, 'GIT_CONFIG_NOSYSTEM=1', `COUNTER_FILE=${count}`,
     'git', 'commit', '-q', '--allow-empty-message', '--no-edit'], { cwd: repo.dir, encoding: 'utf8' })
   // 前提：最小环境中找不到 node（node 装在 /usr/bin 的系统上前提不成立，只做诊断）
-  const nodeInMinimalPath = spawnSync('/usr/bin/env', ['-i', 'PATH=/usr/bin:/bin', 'sh', '-c', 'command -v node'], { encoding: 'utf8' }).status === 0
+  const nodeInMinimalPath = spawnSync('/usr/bin/env', ['-i', `PATH=${minimalPath}`, 'sh', '-c', 'command -v node'], { encoding: 'utf8' }).status === 0
   if (nodeInMinimalPath) t.diagnostic('最小环境中也能找到 node：本用例只验证 hook 能启动主程序')
   assert.equal(r.status, 0, r.stderr)
   assert.equal(lineCount(count), 1)

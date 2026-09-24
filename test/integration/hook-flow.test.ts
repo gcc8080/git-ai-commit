@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Sandbox, type Repo } from '../helpers/repo.ts'
+import { running } from '../helpers/proc.ts'
 import { BUNDLE } from '../helpers/paths.ts'
 import { COUNTER, installPrepareHook, lineCount, writeMachineConfig } from '../helpers/setup.ts'
 
@@ -167,5 +168,5 @@ test('8.2 用户取消（SIGINT）：以非零退出，不重试、不回退，�
   assert.match(stderr, /已取消/)
   assert.equal(lineCount(log), 1, '没有重试或回退')
   await sleep(1500)
-  assert.throws(() => process.kill(backendPid, 0), '后端进程已被终止')
+  assert.equal(running(backendPid), false, '后端进程已被终止')
 })
