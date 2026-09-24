@@ -200,4 +200,4 @@ npm run build && AI_COMMIT_PERF=1 node --test --test-concurrency=1 "test/perf/*.
 
 合同测试观察后端子进程时依赖 `ps`（Linux 上需要安装 procps）；单元测试与集成测试在有 `/proc` 的系统上不依赖它。
 
-设计文档与任务清单在 `openspec/changes/ai-commit-message/`。
+规格在 `openspec/specs/`；设计文档、提案与任务清单已归档在 `openspec/changes/archive/2026-09-24-ai-commit-message/`。
