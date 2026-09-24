@@ -23,8 +23,6 @@ function stage(repo: Repo) {
   repo.git(['add', '-A'])
 }
 
-const head = (repo: Repo) => repo.git(['rev-parse', 'HEAD']).stdout.trim()
-
 // ---------- 8.1 shell 模板与入口计数 ----------
 
 test('8.1 入口计数：-m、跳过开关、重入标记、重用消息都不启动主程序；普通提交启动一次', (t) => {
