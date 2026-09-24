@@ -6,3 +6,7 @@ local.properties
 **/*.lock
 .dart_tool
 /build
+
+# git-ai-commit
+node_modules/
+dist/

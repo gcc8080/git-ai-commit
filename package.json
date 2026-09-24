@@ -1,0 +1,27 @@
+{
+  "name": "git-ai-commit",
+  "version": "0.1.0",
+  "description": "借助本机已安装的 AI harness CLI（claude、codex、opencode、pi）生成 git commit 信息",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "git-ai-commit": "dist/git-ai-commit.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test \"test/**/*.test.ts\"",
+    "test:unit": "node --test \"test/unit/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3"
+  }
+}
