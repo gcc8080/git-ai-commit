@@ -2,90 +2,90 @@
 
 ## 1. 项目骨架与测试基建（第一期：同步路径）
 
-- [ ] 1.1 初始化 TypeScript 工程：`package.json` 设 `engines.node >=22` 与 `bin.git-ai-commit`，`dependencies` 为空（只有 typescript、esbuild 等开发依赖），`tsconfig` 开启 strict；验证：`npx tsc --noEmit` 通过，`npm ls --omit=dev` 不列出任何运行时依赖
-- [ ] 1.2 用 esbuild 打包为带 shebang 的单文件 `dist/git-ai-commit.js`；验证：把产物单独复制到没有 `node_modules` 的临时目录，`node git-ai-commit.js --version` 正常输出
-- [ ] 1.3 CLI 入口用 `util.parseArgs` 分派 `install`、`uninstall`、`prewarm on|off`、`doctor`、`preview`、`hook <name>` 与后台入口 `warm`；验证：`node --test` 覆盖各子命令的参数解析，未知子命令以非零退出并打印用法
-- [ ] 1.4 测试基建：临时仓库夹具（`GIT_CONFIG_GLOBAL=/dev/null`、独立 user 配置、可选 linked worktree）、只计数的诊断入口、可编程的 fake backend（可返回候选、拒绝、超时、截断与各类错误）；验证：一个示例测试在夹具仓库中完成 `git commit` 并读到诊断入口的启动次数
+- [x] 1.1 初始化 TypeScript 工程：`package.json` 设 `engines.node >=22` 与 `bin.git-ai-commit`，`dependencies` 为空（只有 typescript、esbuild 等开发依赖），`tsconfig` 开启 strict；验证：`npx tsc --noEmit` 通过，`npm ls --omit=dev` 不列出任何运行时依赖
+- [x] 1.2 用 esbuild 打包为带 shebang 的单文件 `dist/git-ai-commit.js`；验证：把产物单独复制到没有 `node_modules` 的临时目录，`node git-ai-commit.js --version` 正常输出
+- [x] 1.3 CLI 入口用 `util.parseArgs` 分派 `install`、`uninstall`、`prewarm on|off`、`doctor`、`preview`、`hook <name>` 与后台入口 `warm`；验证：`node --test` 覆盖各子命令的参数解析，未知子命令以非零退出并打印用法
+- [x] 1.4 测试基建：临时仓库夹具（`GIT_CONFIG_GLOBAL=/dev/null`、独立 user 配置、可选 linked worktree）、只计数的诊断入口、可编程的 fake backend（可返回候选、拒绝、超时、截断与各类错误）；验证：一个示例测试在夹具仓库中完成 `git commit` 并读到诊断入口的启动次数
 
 ## 2. 配置与 profile（第一期）
 
-- [ ] 2.1 仓库共享配置 `.ai-commit.json` 的解析与校验（手写窄类型 parse）：只接受提交规范字段（语言、格式、长度上限、type 枚举、scope 规则、输入预算、排除清单）；出现凭证、可执行命令、回退链或预热开关时拒绝该项并在诊断中说明；验证：表驱动测试覆盖合法配置与四类被拒字段
-- [ ] 2.2 本机配置 `$XDG_CONFIG_HOME/git-ai-commit/config.json`（默认 `~/.config/git-ai-commit/config.json`）：profile 的 harness、provider、model、effort 四个独立字段，回退链，拒绝未验证后端的严格模式开关；验证：测试确认 effort 不会拼进模型标识，缺少必填字段时给出明确报错
-- [ ] 2.3 profile 选择优先级：`--profile` → `AI_COMMIT_PROFILE` → `git config --local aicommit.profile` → 本机默认；验证：逐级覆盖的测试，并确认用环境变量单次切换时不修改任何配置文件
+- [x] 2.1 仓库共享配置 `.ai-commit.json` 的解析与校验（手写窄类型 parse）：只接受提交规范字段（语言、格式、长度上限、type 枚举、scope 规则、输入预算、排除清单）；出现凭证、可执行命令、回退链或预热开关时拒绝该项并在诊断中说明；验证：表驱动测试覆盖合法配置与四类被拒字段
+- [x] 2.2 本机配置 `$XDG_CONFIG_HOME/git-ai-commit/config.json`（默认 `~/.config/git-ai-commit/config.json`）：profile 的 harness、provider、model、effort 四个独立字段，回退链，拒绝未验证后端的严格模式开关；验证：测试确认 effort 不会拼进模型标识，缺少必填字段时给出明确报错
+- [x] 2.3 profile 选择优先级：`--profile` → `AI_COMMIT_PROFILE` → `git config --local aicommit.profile` → 本机默认；验证：逐级覆盖的测试，并确认用环境变量单次切换时不修改任何配置文件
 
 ## 3. Git 快照与状态检测（第一期）
 
-- [ ] 3.1 git 子进程封装：参数数组启动；保留 Git 环境，`GIT_INDEX_FILE` 为相对路径时先解析为绝对路径；统一带上 `AI_COMMIT_ACTIVE=1` 与 `GIT_LITERAL_PATHSPECS=1`；验证：单元测试确认切换工作目录后相对的 `GIT_INDEX_FILE` 仍指向正确文件，所有 git 子进程的环境中都有重入标记
-- [ ] 3.2 快照（D4）：hook 开始时执行一次 `git write-tree` 取得 target tree；base 取 HEAD 的 tree，unborn HEAD 时用 `git hash-object -t tree /dev/null`；base 等于 target 判为空提交；验证：夹具测试覆盖普通提交、部分暂存、`-a`、路径提交、首次提交、pre-commit 格式化后重新暂存，捕获的 tree 都等于最终 commit tree
-- [ ] 3.3 并发暂存的合同测试（D4）；验证：hook 运行期间另一进程执行 `git add`——普通提交的最终 tree 等于起始快照，新文件在提交后仍处于暂存状态；`-a` 与路径提交时并发的 `git add` 以 128 失败
-- [ ] 3.4 特殊流程检测：用一次 `git rev-parse --git-path` 查询 MERGE_HEAD、CHERRY_PICK_HEAD、REVERT_HEAD、rebase-merge、rebase-apply、sequencer，不硬编码路径；验证：在夹具中分别制造 merge、cherry-pick、revert、rebase 流程，判定都是"保留原消息"，在 linked worktree 中同样正确
+- [x] 3.1 git 子进程封装：参数数组启动；保留 Git 环境，`GIT_INDEX_FILE` 为相对路径时先解析为绝对路径；统一带上 `AI_COMMIT_ACTIVE=1` 与 `GIT_LITERAL_PATHSPECS=1`；验证：单元测试确认切换工作目录后相对的 `GIT_INDEX_FILE` 仍指向正确文件，所有 git 子进程的环境中都有重入标记
+- [x] 3.2 快照（D4）：hook 开始时执行一次 `git write-tree` 取得 target tree；base 取 HEAD 的 tree，unborn HEAD 时用 `git hash-object -t tree /dev/null`；base 等于 target 判为空提交；验证：夹具测试覆盖普通提交、部分暂存、`-a`、路径提交、首次提交、pre-commit 格式化后重新暂存，捕获的 tree 都等于最终 commit tree
+- [x] 3.3 并发暂存的合同测试（D4）；验证：hook 运行期间另一进程执行 `git add`——普通提交的最终 tree 等于起始快照，新文件在提交后仍处于暂存状态；`-a` 与路径提交时并发的 `git add` 以 128 失败
+- [x] 3.4 特殊流程检测：用一次 `git rev-parse --git-path` 查询 MERGE_HEAD、CHERRY_PICK_HEAD、REVERT_HEAD、rebase-merge、rebase-apply、sequencer，不硬编码路径；验证：在夹具中分别制造 merge、cherry-pick、revert、rebase 流程，判定都是"保留原消息"，在 linked worktree 中同样正确
 
 ## 4. 消息文件处理（第一期）
 
-- [ ] 4.1 来源判断：来源为 `message`、`merge`、`squash`、`commit` 时保留原消息；来源为空或 `template` 时进入内容判断；来源或状态无法识别时保留原消息；验证：`-m`、`-F`、`--amend`、`-c`、`-C`、`--fixup`、`--squash` 的夹具测试中后端调用次数都为零
-- [ ] 4.2 注释与 scissors：按 `core.commentChar` 识别注释（默认 `#`，取值为 `auto` 或无法确定时保留原内容），scissors 行及其以下不视为正文；验证：`-v`、`-vv` 的夹具测试中 scissors 以下内容保持不变；`core.commentChar=auto` 时消息文件保持原样
-- [ ] 4.3 正文白名单（D2）：只忽略空行与 Git 格式的 `Signed-off-by: 姓名 <邮箱>` 行，不依赖 `git interpret-trailers --parse`；验证：空模板、纯注释模板、只有签名行时判为需要生成；模板含 `fix: …`、`feat: …`、`说明: …`、`Co-authored-by: …`，或有 `--trailer` 追加的尾注时保留原样，后端调用次数为零
-- [ ] 4.4 写入：生成内容插入文件最前，其后内容全部保留；验证：`-s` 的最终消息为"标题 + 空行 + Signed-off-by"；`-v` 的最终消息只含插入内容；`--no-edit` 时生成的消息被直接提交
+- [x] 4.1 来源判断：来源为 `message`、`merge`、`squash`、`commit` 时保留原消息；来源为空或 `template` 时进入内容判断；来源或状态无法识别时保留原消息；验证：`-m`、`-F`、`--amend`、`-c`、`-C`、`--fixup`、`--squash` 的夹具测试中后端调用次数都为零
+- [x] 4.2 注释与 scissors：按 `core.commentChar` 识别注释（默认 `#`，取值为 `auto` 或无法确定时保留原内容），scissors 行及其以下不视为正文；验证：`-v`、`-vv` 的夹具测试中 scissors 以下内容保持不变；`core.commentChar=auto` 时消息文件保持原样
+- [x] 4.3 正文白名单（D2）：只忽略空行与 Git 格式的 `Signed-off-by: 姓名 <邮箱>` 行，不依赖 `git interpret-trailers --parse`；验证：空模板、纯注释模板、只有签名行时判为需要生成；模板含 `fix: …`、`feat: …`、`说明: …`、`Co-authored-by: …`，或有 `--trailer` 追加的尾注时保留原样，后端调用次数为零
+- [x] 4.4 写入：生成内容插入文件最前，其后内容全部保留；验证：`-s` 的最终消息为"标题 + 空行 + Signed-off-by"；`-v` 的最终消息只含插入内容；`--no-edit` 时生成的消息被直接提交
 
 ## 5. 差异采集与模型输入（第一期）
 
-- [ ] 5.1 差异采集（D12）：用 `git diff-tree -p -z --no-textconv --no-ext-diff` 比较 base 与 target，固定重命名检测参数，文件清单按 NUL 读取；验证：配置会留下标记的 textconv 与受信任的外部 diff 时，外部程序调用次数为零；修改 `diff.context`、`diff.noprefix` 不改变变化集合；路径含空格、中文、换行、shell 元字符时正确识别且不执行任何命令
-- [ ] 5.2 秘密排除（D13）：默认清单涵盖环境变量文件、私钥、证书、密钥库，可由仓库配置扩展；新路径与重命名或复制的源路径任一匹配即排除内容，被删除文件同样适用，排除后仍报告"发生了变化"；验证：修改 `.env`、`.env → notes.txt`、删除私钥三个用例中，模型输入不含任何内容行
-- [ ] 5.3 预算与覆盖标注：按文件分配字节预算，逐文件标注完整、部分省略、仅统计、二进制、内容排除；lockfile 与生成物只给统计；二进制、LFS 指针、子模块只给变化事实，不进入子模块读取；验证：超预算时列出被省略的内容；只改锁文件时仍报告变化；子模块更新只包含从旧提交到新提交的事实
-- [ ] 5.4 历史样本（D9）：HEAD 的 first-parent 历史中最近 20 条非 merge 提交的标题，加本地判定的"有正文"标记，固定字节上限；验证：模型输入中不含任何正文内容；提交 oid 列表可供缓存键使用
-- [ ] 5.5 prompt 构造：数据区与指令区分隔，显式声明输入是待分析的数据；语言由配置强制（默认中文）；从历史只取结构特征；写入证据约束与"显示宽度 ≤50 列"的软目标；验证：golden 测试覆盖含"忽略此前全部指令"文本的差异，该文本只出现在数据区；英文历史加中文配置时 prompt 要求输出中文
+- [x] 5.1 差异采集（D12）：用 `git diff-tree -p -z --no-textconv --no-ext-diff` 比较 base 与 target，固定重命名检测参数，文件清单按 NUL 读取；验证：配置会留下标记的 textconv 与受信任的外部 diff 时，外部程序调用次数为零；修改 `diff.context`、`diff.noprefix` 不改变变化集合；路径含空格、中文、换行、shell 元字符时正确识别且不执行任何命令
+- [x] 5.2 秘密排除（D13）：默认清单涵盖环境变量文件、私钥、证书、密钥库，可由仓库配置扩展；新路径与重命名或复制的源路径任一匹配即排除内容，被删除文件同样适用，排除后仍报告"发生了变化"；验证：修改 `.env`、`.env → notes.txt`、删除私钥三个用例中，模型输入不含任何内容行
+- [x] 5.3 预算与覆盖标注：按文件分配字节预算，逐文件标注完整、部分省略、仅统计、二进制、内容排除；lockfile 与生成物只给统计；二进制、LFS 指针、子模块只给变化事实，不进入子模块读取；验证：超预算时列出被省略的内容；只改锁文件时仍报告变化；子模块更新只包含从旧提交到新提交的事实
+- [x] 5.4 历史样本（D9）：HEAD 的 first-parent 历史中最近 20 条非 merge 提交的标题，加本地判定的"有正文"标记，固定字节上限；验证：模型输入中不含任何正文内容；提交 oid 列表可供缓存键使用
+- [x] 5.5 prompt 构造：数据区与指令区分隔，显式声明输入是待分析的数据；语言由配置强制（默认中文）；从历史只取结构特征；写入证据约束与"显示宽度 ≤50 列"的软目标；验证：golden 测试覆盖含"忽略此前全部指令"文本的差异，该文本只出现在数据区；英文历史加中文配置时 prompt 要求输出中文
 
 ## 6. 输出协议与渲染（第一期）
 
-- [ ] 6.1 schema 与校验（D6）：候选 `{type, scope, subject, body[], breakingChange}` 或拒绝 `{refusal}`；禁止额外字段与控制字符；type 取可配置的枚举（默认 conventional 的 11 种）；body 的条数与单条长度有上限；body 中不得有尾注格式的行，也不得有输入中不存在的 issue 编号；验证：合法与非法样例的表驱动测试
-- [ ] 6.2 兜底解析：只剥去最外层代码围栏，剥去后必须是完整合法的 JSON；截断的输出、普通文本、不完整的 JSON 一律判为失败，不做修补；验证：覆盖围栏包裹、中途截断、前后夹带说明文字的样例
-- [ ] 6.3 header 长度（D9）：对完整 header（含 `type(scope)!: `）同时校验显示宽度 ≤72（自带 East Asian Width 范围表，CJK 与 emoji 计 2 列，组合字符计 0 列）与字符串长度 ≤72（默认按码点，可配置为 UTF-16 码元），仓库配置可以覆盖；超长时至多一次纠正，不裁剪；验证：中文字符数未超限但显示宽度超限时判为超长；纠正后仍超长时判为失败，原文未被裁剪
-- [ ] 6.4 renderer：依 breakingChange 生成 `!` 与 `BREAKING CHANGE:`；验证：渲染快照测试覆盖有无 scope、有无破坏性变更、有无正文的组合
+- [x] 6.1 schema 与校验（D6）：候选 `{type, scope, subject, body[], breakingChange}` 或拒绝 `{refusal}`；禁止额外字段与控制字符；type 取可配置的枚举（默认 conventional 的 11 种）；body 的条数与单条长度有上限；body 中不得有尾注格式的行，也不得有输入中不存在的 issue 编号；验证：合法与非法样例的表驱动测试
+- [x] 6.2 兜底解析：只剥去最外层代码围栏，剥去后必须是完整合法的 JSON；截断的输出、普通文本、不完整的 JSON 一律判为失败，不做修补；验证：覆盖围栏包裹、中途截断、前后夹带说明文字的样例
+- [x] 6.3 header 长度（D9）：对完整 header（含 `type(scope)!: `）同时校验显示宽度 ≤72（自带 East Asian Width 范围表，CJK 与 emoji 计 2 列，组合字符计 0 列）与字符串长度 ≤72（默认按码点，可配置为 UTF-16 码元），仓库配置可以覆盖；超长时至多一次纠正，不裁剪；验证：中文字符数未超限但显示宽度超限时判为超长；纠正后仍超长时判为失败，原文未被裁剪
+- [x] 6.4 renderer：依 breakingChange 生成 `!` 与 `BREAKING CHANGE:`；验证：渲染快照测试覆盖有无 scope、有无破坏性变更、有无正文的组合
 
 ## 7. 后端执行器与第一个真实后端（第一期）
 
-- [ ] 7.1 进程执行器（D12、D17）：参数数组启动，stdin 传入 prompt；后端运行在任务自己的进程组中，工作目录为只允许当前用户访问的临时目录，清除 `GIT_DIR`、`GIT_INDEX_FILE` 等指向原仓库的变量但保留重入标记；用单调时钟计时，超时后终止整个进程组并清理临时文件；捕获 stderr，只向用户呈现分类后的一行原因；验证：fake backend 覆盖超时（进程组内的子进程也被终止）、把完整输入回显到 stderr（终端只见一行原因）、子进程环境检查
-- [ ] 7.2 传输解析（D7）：envelope、file、text、jsonl 四种；非零退出、错误事件、截断、空结果、缺少完成标记一律判为失败；验证：每种传输都有正常、截断、非零退出的样例
-- [ ] 7.3 claude adapter（第一个真实后端，实测可用）：`-p --safe-mode --tools "" --strict-mcp-config --no-session-persistence --output-format json`，支持的版本加 `--json-schema` 并读取 `structured_output`，模型与 effort 取自 profile；验证：在夹具仓库中完成一次真实提交，消息通过 schema 校验
+- [x] 7.1 进程执行器（D12、D17）：参数数组启动，stdin 传入 prompt；后端运行在任务自己的进程组中，工作目录为只允许当前用户访问的临时目录，清除 `GIT_DIR`、`GIT_INDEX_FILE` 等指向原仓库的变量但保留重入标记；用单调时钟计时，超时后终止整个进程组并清理临时文件；捕获 stderr，只向用户呈现分类后的一行原因；验证：fake backend 覆盖超时（进程组内的子进程也被终止）、把完整输入回显到 stderr（终端只见一行原因）、子进程环境检查
+- [x] 7.2 传输解析（D7）：envelope、file、text、jsonl 四种；非零退出、错误事件、截断、空结果、缺少完成标记一律判为失败；验证：每种传输都有正常、截断、非零退出的样例
+- [x] 7.3 claude adapter（第一个真实后端，实测可用）：`-p --safe-mode --tools "" --strict-mcp-config --no-session-persistence --output-format json`，支持的版本加 `--json-schema` 并读取 `structured_output`，模型与 effort 取自 profile；验证：在夹具仓库中完成一次真实提交，消息通过 schema 校验
 
 ## 8. prepare-commit-msg 入口与失败语义（第一期）
 
-- [ ] 8.1 shell 模板（D18）：标记行、安装标识，以及正确转义的 Node 与脚本绝对路径；先放行 `AI_COMMIT_SKIP`、重入标记与来源为 `message`/`merge`/`squash`/`commit` 的情形（以 0 退出，不启动主程序）；运行时路径失效时输出一行诊断并以 0 退出；其余情形 `exec` 主程序；验证：入口计数——`git commit -m` 与跳过开关下主程序启动次数为零；模板里已有标题时主程序启动一次后放行，后端调用次数为零
-- [ ] 8.2 主流程与失败语义（D14）：判断是否需要生成 → 生成 → 校验 → 写入；后端失败、超时、输出不合规、模型拒绝时消息文件不变，输出一行诊断并以 0 退出；收到 SIGINT/SIGTERM 时以非零退出，不重试、不回退；前台总预算默认 45s，纠正与回退不重置预算；同步生成期间在 stderr 显示进度（非 TTY 时不输出控制字符）；验证：fake backend 逐一覆盖上述失败，消息文件都未改变，退出码符合 D14
-- [ ] 8.3 失败语义的合同测试（D14、[评审] C03）；验证：不打开编辑器且生成失败时，空消息、只剩签名行、空模板都由 Git 中止；`-m`、跳过开关、`commit --allow-empty --allow-empty-message --no-edit`、模板含 `fix:` 标题并带 `--allow-empty-message --no-edit` 四个用例，分别在运行时有效或失效、打开或不打开编辑器下核对入口计数与最终退出码，运行时失效时的结果与不装 hook 时一致
+- [x] 8.1 shell 模板（D18）：标记行、安装标识，以及正确转义的 Node 与脚本绝对路径；先放行 `AI_COMMIT_SKIP`、重入标记与来源为 `message`/`merge`/`squash`/`commit` 的情形（以 0 退出，不启动主程序）；运行时路径失效时输出一行诊断并以 0 退出；其余情形 `exec` 主程序；验证：入口计数——`git commit -m` 与跳过开关下主程序启动次数为零；模板里已有标题时主程序启动一次后放行，后端调用次数为零
+- [x] 8.2 主流程与失败语义（D14）：判断是否需要生成 → 生成 → 校验 → 写入；后端失败、超时、输出不合规、模型拒绝时消息文件不变，输出一行诊断并以 0 退出；收到 SIGINT/SIGTERM 时以非零退出，不重试、不回退；前台总预算默认 45s，纠正与回退不重置预算；同步生成期间在 stderr 显示进度（非 TTY 时不输出控制字符）；验证：fake backend 逐一覆盖上述失败，消息文件都未改变，退出码符合 D14
+- [x] 8.3 失败语义的合同测试（D14、[评审] C03）；验证：不打开编辑器且生成失败时，空消息、只剩签名行、空模板都由 Git 中止；`-m`、跳过开关、`commit --allow-empty --allow-empty-message --no-edit`、模板含 `fix:` 标题并带 `--allow-empty-message --no-edit` 四个用例，分别在运行时有效或失效、打开或不打开编辑器下核对入口计数与最终退出码，运行时失效时的结果与不装 hook 时一致
 
 ## 9. 安装与卸载（第一期）
 
-- [ ] 9.1 hooks 目录判定（D18）：有效 hooks 目录（`--git-path hooks`）必须等于 `--git-common-dir` 下的 `hooks`，否则按冲突处理，不修改任何文件，并打印接入指引；验证：两个无关仓库共用全局 `core.hooksPath` 时在 A 安装，共享目录未被写入，B 的提交与暂存不启动模型；Husky 目录与手写的同名 hook 都报告冲突，文件保持不变
-- [ ] 9.2 安装：生成随机的安装标识；写入 `prepare-commit-msg`（带标记行，记录内容哈希）；为现有的每个 worktree 创建状态目录 `<--git-path ai-commit>/<安装标识>/`；输出说明 hooks 由所有 worktree 共享；重复安装时校验哈希，被用户改过的 hook 不覆盖并报告；验证：重复安装的结果与安装一次相同；手动改过 hook 后再次安装，文件保留改后的内容
-- [ ] 9.3 卸载（D19 的顺序）：对每个 worktree，先把本次安装的状态目录原子改名，再读取其中的任务登记与锁、终止对应进程并确认退出，然后删除目录，最后移除带标记且哈希一致的 hook；被改过的 hook 保留并报告；重复卸载无副作用；验证：在含 linked worktree 的夹具中，卸载后所有 worktree 的状态目录都已移除，被改过的 hook 仍在，再次卸载不报错
-- [ ] 9.4 GUI 环境：hook 中只用绝对路径；验证：在用 `env -i` 构造的最小环境中执行 `git commit`，hook 仍能启动主程序
+- [x] 9.1 hooks 目录判定（D18）：有效 hooks 目录（`--git-path hooks`）必须等于 `--git-common-dir` 下的 `hooks`，否则按冲突处理，不修改任何文件，并打印接入指引；验证：两个无关仓库共用全局 `core.hooksPath` 时在 A 安装，共享目录未被写入，B 的提交与暂存不启动模型；Husky 目录与手写的同名 hook 都报告冲突，文件保持不变
+- [x] 9.2 安装：生成随机的安装标识；写入 `prepare-commit-msg`（带标记行，记录内容哈希）；为现有的每个 worktree 创建状态目录 `<--git-path ai-commit>/<安装标识>/`；输出说明 hooks 由所有 worktree 共享；重复安装时校验哈希，被用户改过的 hook 不覆盖并报告；验证：重复安装的结果与安装一次相同；手动改过 hook 后再次安装，文件保留改后的内容
+- [x] 9.3 卸载（D19 的顺序）：对每个 worktree，先把本次安装的状态目录原子改名，再读取其中的任务登记与锁、终止对应进程并确认退出，然后删除目录，最后移除带标记且哈希一致的 hook；被改过的 hook 保留并报告；重复卸载无副作用；验证：在含 linked worktree 的夹具中，卸载后所有 worktree 的状态目录都已移除，被改过的 hook 仍在，再次卸载不报错
+- [x] 9.4 GUI 环境：hook 中只用绝对路径；验证：在用 `env -i` 构造的最小环境中执行 `git commit`，hook 仍能启动主程序
 
 ## 10. preview 与 doctor（第一期）
 
-- [ ] 10.1 `preview`：只生成、不提交；验证：执行前后 `git rev-parse HEAD` 与 `git write-tree` 的结果都不变
-- [ ] 10.2 `doctor`（第一期部分）：实际解析到的 Node 可执行文件与版本、hook 中记录的路径是否有效、当前生效的配置、hooks 目录是否冲突，不发起任何模型请求；验证：Node 路径失效时报告问题并给出"重新安装"的修复方式；执行期间后端调用次数为零
+- [x] 10.1 `preview`：只生成、不提交；验证：执行前后 `git rev-parse HEAD` 与 `git write-tree` 的结果都不变
+- [x] 10.2 `doctor`（第一期部分）：实际解析到的 Node 可执行文件与版本、hook 中记录的路径是否有效、当前生效的配置、hooks 目录是否冲突，不发起任何模型请求；验证：Node 路径失效时报告问题并给出"重新安装"的修复方式；执行期间后端调用次数为零
 
 ## 11. 第一期端到端验收
 
-- [ ] 11.1 在一个真实仓库的副本中安装后，依次执行 `git commit`、`git commit -s`、`git commit -v`、`git commit --no-edit`、`git commit -m`，再在全局配置了空 `commit.template` 的环境下重复一遍；验证：前四种都得到中文 conventional 草稿并保留签名行；`-m` 不启动主程序；空模板环境下照常生成
+- [x] 11.1 在一个真实仓库的副本中安装后，依次执行 `git commit`、`git commit -s`、`git commit -v`、`git commit --no-edit`、`git commit -m`，再在全局配置了空 `commit.template` 的环境下重复一遍；验证：前四种都得到中文 conventional 草稿并保留签名行；`-m` 不启动主程序；空模板环境下照常生成
 
 ## 12. 其余后端 adapter（第二期：后端覆盖）
 
-- [ ] 12.1 codex adapter：`exec --ephemeral --skip-git-repo-check --color never -s read-only -c features.shell_tool=false -c mcp_servers={} -c web_search="disabled" -c approval_policy="never" --output-schema <文件> -o <文件> -`，结果从 `-o` 指定的文件读取；验证：合同测试覆盖正常、截断、非零退出；失败时 codex 会把 prompt 回显到 stderr，终端只见一行原因（设计时实测额度已耗尽，需在额度恢复后运行）
-- [ ] 12.2 pi adapter：`-p -nt --no-extensions --no-skills --no-prompt-templates --no-context-files --no-session`，provider 与模型标识必须显式指定，用 `pi auth check --json` 探活；验证：合同测试覆盖正常与失败；模型标识不明确时报告配置错误，而不是模糊匹配
-- [ ] 12.3 opencode adapter：专用 agent 经 `OPENCODE_CONFIG_CONTENT` 注入（全局与 agent 两级 `permission: deny`），加 `--pure --format json --title <本工具标记>`，从事件流中取最后一条 text 事件，结束后执行 `opencode session delete <id>`；验证：调用结束后 `opencode session list` 中没有本工具的会话；超时取消后 `doctor` 能按标题列出残留会话
+- [x] 12.1 codex adapter：`exec --ephemeral --skip-git-repo-check --color never -s read-only -c features.shell_tool=false -c mcp_servers={} -c web_search="disabled" -c approval_policy="never" --output-schema <文件> -o <文件> -`，结果从 `-o` 指定的文件读取（13.2 实测 `-c mcp_servers={}` 无效，已改为 `--ignore-user-config` 等，见 D7）；验证：合同测试覆盖正常、截断、非零退出；失败时 codex 会把 prompt 回显到 stderr，终端只见一行原因（设计时实测额度已耗尽，需在额度恢复后运行）
+- [x] 12.2 pi adapter：`-p -nt --no-extensions --no-skills --no-prompt-templates --no-context-files --no-session`，provider 与模型标识必须显式指定，用 `pi auth check --json` 探活；验证：合同测试覆盖正常与失败；模型标识不明确时报告配置错误，而不是模糊匹配
+- [x] 12.3 opencode adapter：专用 agent 经 `OPENCODE_CONFIG_CONTENT` 注入（全局与 agent 两级 `permission: deny`），加 `--pure --format json --title <本工具标记>`，从事件流中取最后一条 text 事件，结束后执行 `opencode session delete <id>`；验证：调用结束后 `opencode session list` 中没有本工具的会话；超时取消后 `doctor` 能按标题列出残留会话
 
 ## 13. 能力探测、兼容性三态与合同测试（第二期）
 
-- [ ] 13.1 能力探测与三态（D7）：从帮助文本或 `--strict-config` 探测必需的限制参数，判定为兼容（在合同测试基线内且没有待核实项）、未验证或不兼容；不兼容永不调用；未验证默认调用，每次调用在诊断中注明，严格模式下拒绝；不兼容或被严格模式拒绝都不触发回退；验证：模拟参数齐全但不在基线内的版本，判为未验证且照常调用；模拟缺参数的版本，判为不兼容，既不调用也不回退
-- [ ] 13.2 能力矩阵的合同测试：在受控配置中启用可观测的扩展、MCP、上下文文件与会话记录，逐后端验证工具、MCP、插件/hook/上下文文件、会话持久化、结构化输出、认证保留，以及子进程是否留在进程组内；验证：结果回填 D7 中的"待核实"项，并更新合同测试基线的版本清单
+- [x] 13.1 能力探测与三态（D7）：从帮助文本或 `--strict-config` 探测必需的限制参数，判定为兼容（在合同测试基线内且没有待核实项）、未验证或不兼容；不兼容永不调用；未验证默认调用，每次调用在诊断中注明，严格模式下拒绝；不兼容或被严格模式拒绝都不触发回退；验证：模拟参数齐全但不在基线内的版本，判为未验证且照常调用；模拟缺参数的版本，判为不兼容，既不调用也不回退
+- [x] 13.2 能力矩阵的合同测试：在受控配置中启用可观测的扩展、MCP、上下文文件与会话记录，逐后端验证工具、MCP、插件/hook/上下文文件、会话持久化、结构化输出、认证保留，以及子进程是否留在进程组内；验证：结果回填 D7 中的"待核实"项，并更新合同测试基线的版本清单
 
 ## 14. 回退链、诊断与递归防护（第二期）
 
-- [ ] 14.1 回退链（D8）：只读本机配置，默认关闭；一次生成至多切换一次，共用总预算；按 D8 的失败类别决定是否回退；回退产出的结果在诊断中注明实际后端；验证：未配置时第二后端的调用次数为零；额度耗尽时切换一次并在诊断中说明；配置错误、纠正后仍不合规、模型拒绝、用户取消、版本不兼容或被严格模式拒绝都不回退
-- [ ] 14.2 `doctor` 补全：各后端的可执行文件、版本、兼容性状态与认证状态；回退链中共用同一账户额度的后端（例如 codex 与走 openai-codex 的 pi）给出提示；列出本工具残留的 opencode 会话；验证：执行期间后端调用次数为零
-- [ ] 14.3 递归防护：后端子进程带重入标记；后端拒绝嵌套运行时按 D14 处理，不清除后端的保护性环境变量；验证：在带 `AI_COMMIT_ACTIVE=1` 的环境中执行 `git commit` 不触发生成；在 Claude Code 会话中执行不带 `-m` 的 `git commit`，结果要么是正常生成，要么是按 D14 放行
+- [x] 14.1 回退链（D8）：只读本机配置，默认关闭；一次生成至多切换一次，共用总预算；按 D8 的失败类别决定是否回退；回退产出的结果在诊断中注明实际后端；验证：未配置时第二后端的调用次数为零；额度耗尽时切换一次并在诊断中说明；配置错误、纠正后仍不合规、模型拒绝、用户取消、版本不兼容或被严格模式拒绝都不回退
+- [x] 14.2 `doctor` 补全：各后端的可执行文件、版本、兼容性状态与认证状态；回退链中共用同一账户额度的后端（例如 codex 与走 openai-codex 的 pi）给出提示；列出本工具残留的 opencode 会话；验证：执行期间后端调用次数为零
+- [x] 14.3 递归防护：后端子进程带重入标记；后端拒绝嵌套运行时按 D14 处理，不清除后端的保护性环境变量；验证：在带 `AI_COMMIT_ACTIVE=1` 的环境中执行 `git commit` 不触发生成；在 Claude Code 会话中执行不带 `-m` 的 `git commit`，结果要么是正常生成，要么是按 D14 放行
 
 ## 15. 预热开关、授权与 hook 模板（第三期：可选预热）
 

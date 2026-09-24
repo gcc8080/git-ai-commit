@@ -276,8 +276,12 @@ key = sha256(
   所有字段禁止控制字符；`body` 中不得出现尾注格式的行（`Signed-off-by:`、`Co-Authored-By:` 等），不得出现输入中不存在的
   issue 编号——这两项都能在本地机械校验。
 - `!` 与 `BREAKING CHANGE:` 由 renderer 依 `breakingChange` 字段生成；消息文件中原有的签名行按 D2 的规则保留。
-- 传输：codex 用 `--output-schema`；claude 在支持的版本上用 `--json-schema` 并读取 `structured_output`，否则读取 envelope 的
-  `result` 再解析 JSON；pi 与 opencode 从文本中解析 JSON。
+- 传输：codex 用 `--output-schema`；claude 读取 envelope 的 `result` 再解析 JSON；pi 与 opencode 从文本中解析 JSON。
+  claude 不使用 `--json-schema`（实施期经项目负责人确认去掉）：能力矩阵合同测试表明它经一次 `StructuredOutput` 工具调用实现，
+  每次多一轮对话，同一输入 37.1s 对 17.8s，第一期端到端的 5 次提交中有 2 次因此超出 45s 的默认预算。
+  进一步测量发现，claude 耗时的大头是扩展思考：后端进程会继承宿主 Claude Code 会话的 `CLAUDE_EFFORT` 与用户 settings 的
+  `effortLevel`，haiku 为一条提交信息输出 1400–8000 个 token（20–78s）。profile 未指定 effort 时，adapter 设
+  `MAX_THINKING_TOKENS=0` 关闭扩展思考，输出降到约 120 个 token，典型耗时 5–10s；指定了 effort 时只由 `--effort` 决定。
 - **兜底解析只允许剥掉最外层的代码围栏**，剥掉后必须是完整、合法的 JSON。截断的输出、普通文本、不完整的 JSON 一律判为
   失败，不做修补。内容超长时走一次纠正，仍超长就失败，不做裁剪——裁剪会破坏原意。纠正至多一次，计入总预算（D17）。
 
@@ -288,27 +292,48 @@ breaking change 标记，因此不采用。
 
 > 修订：第一轮撤回"`backend/` 下不存在 per-harness 文件"——规格约束的是行为，不是文件布局。第二轮增加兼容性三态
 > （[评审] 第二轮第 5 节）。
+>
+> 实施期修订（13.2 能力矩阵合同测试）：全部"待核实"项已经真实调用核实，同时推翻了原稿的两处做法——codex 的
+> `-c mcp_servers={}` 按深度合并处理，清不掉 `config.toml` 中的 MCP 服务器；opencode 的 `permission: deny` 只对模型隐藏工具，
+> 配置中的 MCP 服务器仍会被启动。两处都已改正，见下方矩阵。
 
 **共享部分**：进程执行器（参数数组、stdin 传输、超时、进程组清理、stderr 捕获）；四种传输解析（envelope、file、text、jsonl）；
 统一的候选校验。
 
-**后端专属部分**：参数映射、能力探测、错误分类，以及个别的运行时配置注入——opencode 的专用 agent 经
+**后端专属部分**：参数映射、能力探测、错误分类，以及个别的运行时配置注入——opencode 的专用 agent 与 MCP 服务器禁用项经
 `OPENCODE_CONFIG_CONTENT` 注入；pi 必须显式指定 provider 和模型 ID，避免模糊匹配在模型目录更新后选到别的模型。
 
-**能力矩阵**（第一版合同测试基线）。标"已调用"的项做过真实调用；其余项只核实了参数存在（帮助文本或 `--strict-config`），
-效果待合同测试：
+**能力矩阵**（合同测试基线，`test/contract/capability-matrix.test.ts`）。测试在后端的工作目录中布置可观测的诱饵——上下文文件、
+MCP 诱饵服务器（一启动就写标记文件）、claude 的 SessionStart hook、工作目录之外的数据文件——再用生产参数真实调用。标记文件、
+数据是否泄露、会话是否落盘、子进程是否残留属于直接观测，与模型是否配合无关。工具是否可用以"明确要求模型用工具读取数据文件"的
+直接结果为准；模型自报的工具清单不可靠（claude 在 `--tools ""` 下会自报 Read、Bash 等工具），只作参考。
 
-| | claude 2.1.280 | codex 0.156.0 | pi 0.87.1 | opencode 1.18.32 |
+| | claude 2.1.281 | codex 0.156.1 | pi 0.87.1 | opencode 1.18.32 |
 |---|---|---|---|---|
-| 一次性调用 | `-p`（已调用） | `exec` | `-p` | `run`（已调用） |
-| 关闭内置工具 | `--tools ""` | `-s read-only`，`-c features.shell_tool=false` | `-nt` | 专用 agent，`permission: deny` |
-| 关闭 MCP | `--safe-mode`，`--strict-mcp-config` | `-c mcp_servers={}` | 不适用 | 专用 agent 配置（待核实） |
-| 关闭插件 / hook / 上下文文件 | `--safe-mode`（帮助文本列出 CLAUDE.md、skills、插件、hooks、MCP 等） | 待核实 | `--no-extensions` `--no-skills` `--no-prompt-templates` `--no-context-files` | `--pure`（外部插件） |
+| 一次性调用 | `-p` | `exec` | `-p` | `run` |
+| 关闭内置工具 | `--tools ""`：要求读取数据文件时只有 1 轮、没有工具调用；对照组不带该参数时出现真实的 Read、Bash 调用 | `-s read-only`，关闭 shell 工具、图片生成、goals；读不到数据文件；自述残留 `view_image`、`apply_patch`（被只读 sandbox 挡住）、没有服务器的 MCP 资源工具等 | `-nt`：读不到数据文件 | 专用 agent，`permission: deny`：读不到数据文件 |
+| 关闭 MCP | `--safe-mode`，`--strict-mcp-config`：项目级 `.mcp.json` 中的诱饵未启动 | `--ignore-user-config`：不加载 `config.toml`，认证仍用 `CODEX_HOME`。实测 `-c mcp_servers={}` 无效 | 不适用 | 从 `opencode debug config` 的合并结果取 MCP 服务器名称，在注入的配置中逐个设 `enabled: false`（名称按配置文件身份缓存）：诱饵未启动 |
+| 关闭插件 / hook / 上下文文件 | `--safe-mode`：hook 未执行，工作目录的 CLAUDE.md 未加载 | `--ignore-user-config`，关闭 `hooks`、`plugins`、`shell_snapshot` 三个 feature；工作目录的 AGENTS.md 会被读取 | 四个 `--no-*` 参数：AGENTS.md 未加载 | `--pure`（外部插件）；工作目录的 AGENTS.md 会被读取 |
 | 不落 session | `--no-session-persistence` | `--ephemeral` | `--no-session` | 无此参数；调用后执行 `opencode session delete <id>` |
-| 结构化输出 | `--json-schema` | `--output-schema` | 无 | 无 |
-| 结果传输 | JSON envelope | `-o <file>` | stdout 文本 | JSONL，取最后一条 text 事件（已调用） |
-| 认证复用 | 订阅 OAuth（`--bare` 明确不读 OAuth；`--safe-mode` 的说明未提及认证，按 [桌面稿] 视为保留，待验证） | 订阅 OAuth | 取决于 provider | 取决于 provider |
-| 子进程留在进程组内（D16） | 待核实 | 待核实 | 待核实 | 待核实（`run` 会启动本地服务） |
+| 结构化输出 | 不使用 `--json-schema`（经一次工具调用实现，多一轮对话，见 D6），从 envelope 的 `result` 解析 | `--output-schema`（严格模式：全部字段必填、可为 null） | 无，从文本解析 | 无，从文本解析 |
+| 结果传输 | JSON envelope | `-o <file>` | stdout 文本 | JSONL，取最后一条 text 事件 |
+| 认证复用 | 订阅 OAuth，`--safe-mode` 下保留 | 订阅 OAuth，不受 `--ignore-user-config` 影响 | 取决于 provider | 取决于 provider |
+| 子进程留在进程组内（D16） | 是：正常结束与超时终止后均无残留 | 是：关闭 shell 快照前一次调用派生 19 个进程，超时终止后无残留 | 是（没有子进程） | 是（MCP 服务器禁用后没有子进程） |
+
+"不落 session"一行对四个后端都按随机编号搜索了各自的会话目录，均无命中。codex 与 opencode 会读取工作目录中的 AGENTS.md，
+但生产环境的工作目录是每次新建的临时目录，其中没有这个文件。
+
+实施期的其他发现：
+
+- **后端继承的 `PWD` 必须指向临时目录**：`spawn` 只改变真实工作目录，而 opencode 按继承来的 `PWD` 确定项目，实测会把会话记到
+  原仓库名下，并把原仓库当作项目上下文。执行器现在把 `PWD` 设为临时目录。
+- **codex 对未识别的 `-c` 键静默忽略**（实测 `tools.view_image`）：能力探测在空的 `CODEX_HOME` 中用 `--strict-config` 核对全部
+  覆盖键，未识别即判为不兼容。`view_image` 目前无法关闭，是 codex 的残留风险：它只能读取图片，内容也只发往同一个 provider。
+- **`--ignore-user-config` 的代价**：`config.toml` 中自定义的 `model_providers` 不可用，codex profile 只能使用内置 provider。
+- **耗时**：codex 不再加载用户的 MCP 服务器、插件与 shell 快照后，同一次真实生成从 47s 降到 11s。
+- claude 启动时会执行 `git` 命令；清除 `GIT_*` 环境变量并使用临时工作目录，保证这些命令碰不到用户仓库的索引。
+- 用户本人的全局指令文件（例如 `~/.codex/AGENTS.md`）是否加载没有单独验证：它们来自用户本人而不是仓库，最多影响风格，
+  不扩大权限。
 
 **兼容性三态**：
 
@@ -319,6 +344,7 @@ breaking change 标记，因此不采用。
 | 不兼容 | 缺少任一必需的限制参数 | 永不调用 |
 
 - "参数存在"最多只能让版本从"不兼容"变为"未验证"，不能变为"兼容"。
+- 基线版本清单与待核实项记录在 `src/backend/capability.ts`；把新版本加入基线之前，须在该版本上重跑能力矩阵合同测试。
 - 默认允许调用"未验证"版本的理由：这些 CLI 自动更新很频繁（Context：codex 在设计期间自动升级了一次），默认拦截会让工具在
   每次自动更新后停用。代价是：新版本若改变了某个限制参数的实际效果，要到下次合同测试才能发现，因此诊断中必须如实标注。
 - 严格模式拒绝调用、以及"不兼容"，都按配置问题处理，不触发回退（D8）。
@@ -652,6 +678,5 @@ hook 时一致，shell 也不需要复刻主程序的判定逻辑。
 
 - 预热去抖窗口的具体时长（D16），需要按真实的 `git add` 节奏测量后确定。
 - 缓存容量与保留天数的具体数值（D16）。
-- 能力矩阵中"待核实"的项（codex 的插件与 hook 关闭方式、opencode 的 MCP 关闭方式、claude 在 `--safe-mode` 下的认证行为），
-  由合同测试确定。结果只影响对应后端的兼容性状态，不影响架构。
+- （已解决）能力矩阵中"待核实"的项已由 13.2 的合同测试核实，结果与由此做出的改正见 D7。
 - Linux 平台的验证。
