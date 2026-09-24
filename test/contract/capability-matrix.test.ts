@@ -131,7 +131,7 @@ function watchDescendants(): { setRoot: (pid: number) => void; stop: () => Map<n
   const poll = () => {
     if (root === null) return
     let out = ''
-    try { out = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,command='], { encoding: 'utf8' }) } catch { return }
+    try { out = execFileSync('ps', ['-A', '-ww', '-o', 'pid=,ppid=,command='], { encoding: 'utf8' }) } catch { return }
     const children = new Map<number, number[]>()
     const cmd = new Map<number, string>()
     for (const line of out.split('\n')) {

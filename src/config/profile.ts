@@ -31,7 +31,7 @@ export type ResolvedProfile =
 
 /** 读取各级来源并解析出本次使用的 profile；只读，不修改任何配置。 */
 export function resolveProfile(opts: { flag?: string | undefined; env: NodeJS.ProcessEnv; git: Git | null; machine: MachineConfig }): ResolvedProfile {
-  const gitLocal = opts.git?.tryText(['config', '--local', '--get', 'aicommit.profile']) ?? undefined
+  const gitLocal = opts.git?.configGet('aicommit.profile', 'local') ?? undefined
   const picked = resolveProfileName({
     flag: opts.flag,
     env: opts.env.AI_COMMIT_PROFILE,

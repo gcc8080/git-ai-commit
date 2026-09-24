@@ -2,10 +2,24 @@
 // - 向进程发信号前，先按任务令牌核对它确实是本工具的任务（防止 pid 被复用后误杀无关进程）；
 // - 终止进程组：TERM → 等待 → KILL → 确认整组都已退出；确认不了就返回 false。
 import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 
+/**
+ * 进程的完整命令行；进程不存在时返回 null。任务令牌位于命令行末尾，必须拿到完整内容：
+ * 有 /proc 的系统（Linux）直接读 /proc/<pid>/cmdline；其他系统用 ps -ww（procps 的 ps 在输出被重定向时可能按 80 列截断）。
+ */
 export function processCommand(pid: number): string | null {
-  const r = spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' })
+  if (existsSync('/proc/self/cmdline')) {
+    try {
+      const raw = readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+      const cmd = raw.split('\0').filter((x) => x !== '').join(' ')
+      return cmd === '' ? null : cmd
+    } catch {
+      return null
+    }
+  }
+  const r = spawnSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8' })
   if (r.status !== 0) return null
   const out = r.stdout.trim()
   return out === '' ? null : out

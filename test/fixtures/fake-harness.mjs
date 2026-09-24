@@ -15,6 +15,7 @@
 //   FAKE_SESSIONS  opencode session list 的输出
 //   FAKE_PROBE_LOG 能力探测调用（--version、--help、codex --strict-config）的日志，与 FAKE_LOG 分开
 //   FAKE_AUTH      missing：认证状态查询报告未登录
+//   FAKE_LOG_STDIN 在日志中记录完整的 stdin；FAKE_IGNORE_TERM 忽略 SIGTERM（模拟取消后不及时退出）
 //   FAKE_OPENCODE_MCP  opencode debug config 中列出的 MCP 服务器名称（逗号分隔）；FAKE_OPENCODE_DEBUG_FAIL 使其失败
 //   FAKE_CODEX_UNKNOWN_KEYS  codex --strict-config 探测时报告为未识别的配置键（逗号分隔）
 //   FAKE_HELP_OMIT 逗号分隔：--help 输出中省略的参数（用于模拟缺少限制参数的版本）
@@ -106,6 +107,7 @@ if (argv.includes('--help') || argv.includes('-h')) {
   process.exit(0)
 }
 
+if (process.env.FAKE_IGNORE_TERM) process.on('SIGTERM', () => {})
 const stdin = readStdin()
 const seq = nextScenario()
 log()
@@ -138,7 +140,15 @@ function log() {
   const cwdMode = (statSync(process.cwd()).mode & 0o777).toString(8)
   const si = argv.indexOf('--output-schema')
   const schema = si >= 0 ? JSON.parse(readFileSync(argv[si + 1], 'utf8')) : undefined
-  appendFileSync(process.env.FAKE_LOG, JSON.stringify({ harness, scenario: seq, argv, cwd: process.cwd(), cwdMode, env, stdinBytes: Buffer.byteLength(stdin), pid: process.pid, schema }) + '\n')
+  // 此前的生成调用中仍然存活的进程：用来验证"任一时刻至多一个生成"
+  let othersAlive = []
+  try {
+    othersAlive = readFileSync(process.env.FAKE_LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      .filter((r) => r.scenario !== 'session' && typeof r.pid === 'number').map((r) => r.pid)
+      .filter((pid) => { try { process.kill(pid, 0); return true } catch { return false } })
+  } catch { /* 还没有日志 */ }
+  const extra = process.env.FAKE_LOG_STDIN ? { stdin } : {}
+  appendFileSync(process.env.FAKE_LOG, JSON.stringify({ harness, scenario: seq, argv, cwd: process.cwd(), cwdMode, env, stdinBytes: Buffer.byteLength(stdin), pid: process.pid, schema, othersAlive, at: Date.now(), ...extra }) + '\n')
 }
 
 function candidateObject() {

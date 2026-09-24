@@ -11,13 +11,14 @@ import type { Profile } from '../config/machine.ts'
 import { loadContext } from './context.ts'
 import { HOOK_NAMES } from './install.ts'
 import { isExecutable, resolveExecutable } from '../util/which.ts'
+import { gitTooOld, MIN_GIT, MIN_NODE_MAJOR, parseGitVersion, RUNTIME_BASELINE } from '../compat.ts'
 import { probeCapability } from '../backend/capability.ts'
 import { accountFamily, authStatus } from '../backend/auth.ts'
 import { execBackend } from '../backend/exec.ts'
 import { OPENCODE_TITLE } from '../backend/opencode.ts'
 import { pickFallback } from './generate-flow.ts'
 
-export const MIN_NODE_MAJOR = 22
+export { MIN_NODE_MAJOR } from '../compat.ts'
 
 export interface Report {
   lines: string[]
@@ -43,13 +44,16 @@ export async function doctorReport(env: NodeJS.ProcessEnv = process.env, profile
   lines.push('git-ai-commit doctor（不发起任何模型请求）', '', '运行时')
   const nodeMajor = Number(process.versions.node.split('.')[0])
   const nodePath = realpathSync(process.execPath)
-  if (nodeMajor >= MIN_NODE_MAJOR) ok(`Node ${process.versions.node}：${nodePath}`)
+  const nodeTested = (RUNTIME_BASELINE.node as readonly string[]).includes(process.versions.node) ? '已验证' : `未经合同测试（已验证：${RUNTIME_BASELINE.node.join('、')}）`
+  if (nodeMajor >= MIN_NODE_MAJOR) ok(`Node ${process.versions.node}（${nodeTested}）：${nodePath}`)
   else bad(`Node ${process.versions.node} 低于要求的 ${MIN_NODE_MAJOR}：${nodePath}`, `安装 Node ${MIN_NODE_MAJOR} 或更高版本`)
 
   const ctx = loadContext(process.cwd(), env)
   const gitVersion = ctx.git.tryText(['version'])
+  const gv = gitVersion === null ? null : parseGitVersion(gitVersion)
   if (gitVersion === null) bad('找不到 git')
-  else ok(gitVersion)
+  else if (gv !== null && gitTooOld(gv)) bad(`${gitVersion} 低于要求的 ${MIN_GIT.join('.')}`, `升级 git 到 ${MIN_GIT.join('.')} 或更高版本`)
+  else ok(`${gitVersion}（${gv !== null && (RUNTIME_BASELINE.git as readonly string[]).includes(gv.version) ? '已验证' : `未经合同测试，最低要求 ${MIN_GIT.join('.')}`}）`)
   const inRepo = ctx.git.tryText(['rev-parse', '--git-dir']) !== null
 
   lines.push('', 'hook')
@@ -101,6 +105,12 @@ export async function doctorReport(env: NodeJS.ProcessEnv = process.env, profile
   if (picked.ok) ok(`当前 profile：${picked.profile.name}（来自 ${{ flag: '--profile', env: 'AI_COMMIT_PROFILE', git: 'git config aicommit.profile', default: 'defaultProfile' }[picked.source]}）`)
   else bad(picked.error)
   note(`回退链：${m.config.fallback.length === 0 ? '未配置（默认不回退）' : m.config.fallback.join(' → ')}`)
+  if (inRepo) {
+    const prewarm = ctx.git.tryText(['config', '--bool', 'aicommit.prewarm'])
+    const hookInstalled = existsSync(join(hooksLocation(ctx.git).defaultDir, 'post-index-change'))
+    note(`预热：${prewarm === 'true' ? '开启' : prewarm === 'false' ? '关闭' : '未设置（默认关闭）'}；post-index-change ${hookInstalled ? '已安装' : '未安装'}`)
+    if (prewarm === 'true' && !hookInstalled) bad('预热已开启，但 post-index-change 未安装，暂存时不会预热', '执行 git ai-commit prewarm on')
+  }
   note(`总时间预算：${m.config.timeoutMs}ms；严格模式：${m.config.strict ? '开启' : '关闭'}`)
   for (const d of ctx.repoDiagnostics) bad(d)
   note(`生成规则：语言 ${ctx.rules.language}，header 上限 ${ctx.rules.headerMaxWidth} 列 / ${ctx.rules.headerMaxLength}（${ctx.rules.lengthUnit}）`)

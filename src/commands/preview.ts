@@ -4,7 +4,9 @@ import type { Io } from '../main.ts'
 import { captureSnapshot } from '../git/snapshot.ts'
 import { startProgress, type Progress } from '../util/progress.ts'
 import { loadContext } from './context.ts'
-import { runGeneration } from './generate-flow.ts'
+import { generateCached } from '../prewarm/cached.ts'
+import { installedId } from '../install/hooks.ts'
+import { hooksLocation } from '../install/paths.ts'
 
 export async function previewCommand(cmd: Command, io: Io, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   if (cmd.kind !== 'preview') return 2
@@ -23,8 +25,11 @@ export async function previewCommand(cmd: Command, io: Io, env: NodeJS.ProcessEn
   process.once('SIGINT', onSignal)
   const ui: { progress: Progress | null } = { progress: null }
   try {
-    const r = await runGeneration(ctx, snapshot, {
+    const r = await generateCached(ctx, snapshot, {
+      installId: installedId(hooksLocation(ctx.git).defaultDir),
+      refresh: cmd.refresh,
       profileFlag: cmd.profile,
+      onWait: () => { ui.progress?.stop(); ui.progress = startProgress('正在等待同一快照的预热结果…') },
       signal: ac.signal,
       onStart: (name) => { ui.progress?.stop(); ui.progress = startProgress(`正在用 ${name} 生成提交信息…`) },
       onNotice: (m) => { ui.progress?.stop(); ui.progress = null; io.err(`ai-commit: ${m}`) },

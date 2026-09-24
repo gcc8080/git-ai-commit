@@ -19,7 +19,12 @@ export function emptyTree(git: Git): string {
 
 export function captureSnapshot(git: Git): Snapshot {
   const target = git.text(['write-tree'])
-  const head = git.tryText(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])
-  const base = head === null ? emptyTree(git) : git.text(['rev-parse', `${head}^{tree}`])
-  return { head, base, target, unborn: head === null, empty: base === target }
+  // HEAD 的提交与 tree 用一次 rev-parse 取得；失败（unborn）时退回空 tree
+  const r = git.run(['rev-parse', 'HEAD^{commit}', 'HEAD^{tree}', '--'], { allowFail: true })
+  const [head, tree] = r.status === 0 ? r.stdout.split('\n').filter((l) => l !== '') : []
+  if (head === undefined || tree === undefined) {
+    const base = emptyTree(git)
+    return { head: null, base, target, unborn: true, empty: base === target }
+  }
+  return { head, base: tree, target, unborn: false, empty: tree === target }
 }

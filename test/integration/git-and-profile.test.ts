@@ -55,15 +55,18 @@ test('各级来源逐级覆盖；用环境变量单次切换不修改任何配�
   const env = sb.env({ AI_COMMIT_PROFILE: 'b' })
   const machine = loadMachineConfig(env)
   assert.equal(machine.exists, true)
-  const git = new Git(repo.dir, env)
-  const pick = (flag: string | undefined, e: NodeJS.ProcessEnv) => {
+  // Git 对象在一次命令调用内复用配置查询的结果：配置变化后要用新的对象读取
+  const pick = (flag: string | undefined, e: NodeJS.ProcessEnv, git = new Git(repo.dir, env)) => {
     const r = resolveProfile({ flag, env: e, git, machine: machine.config })
     return r.ok ? `${r.profile.name}:${r.source}` : r.error
   }
   assert.equal(pick('a', env), 'a:flag')
   assert.equal(pick(undefined, env), 'b:env')
   assert.equal(pick(undefined, sb.env()), 'c:git')
+  const cached = new Git(repo.dir, env)
+  assert.equal(pick(undefined, sb.env(), cached), 'c:git')
   repo.git(['config', '--local', '--unset', 'aicommit.profile'])
+  assert.equal(pick(undefined, sb.env(), cached), 'c:git', '同一个 Git 对象内复用读取结果')
   assert.equal(pick(undefined, sb.env()), 'd:default')
   repo.git(['config', '--local', 'aicommit.profile', 'c'])
 

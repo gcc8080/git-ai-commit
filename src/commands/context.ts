@@ -15,7 +15,7 @@ export interface Context {
 }
 
 export function loadRepoRules(git: Git): { rules: Rules; diagnostics: string[] } {
-  const top = git.tryText(['rev-parse', '--show-toplevel'])
+  const top = git.paths()?.toplevel ?? null
   if (top === null) return { rules: effectiveRules({}), diagnostics: [] }
   let text: string
   try {

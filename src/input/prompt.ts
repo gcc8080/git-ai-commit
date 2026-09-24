@@ -5,6 +5,9 @@ import type { FileInput } from './budget.ts'
 import { historyStyle, type HistoryEntry } from './history.ts'
 import { languageName } from '../config/language.ts'
 
+/** prompt 模板版本：模板文字有任何变化都要加一（缓存键包含它；golden 测试核对模板与版本号是否对应）。 */
+export const PROMPT_VERSION = 2
+
 export interface PromptInput {
   rules: Rules
   files: FileInput[]

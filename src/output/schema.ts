@@ -5,6 +5,9 @@ import type { LengthUnit, Rules } from '../config/rules.ts'
 import { displayWidth } from '../util/eaw.ts'
 import { languageName, requiredScript } from '../config/language.ts'
 
+/** 输出协议版本：候选字段或校验规则变化时加一（缓存键与缓存条目都记录它）。 */
+export const SCHEMA_VERSION = 1
+
 export interface Candidate {
   type: string
   scope: string | null
@@ -19,8 +22,11 @@ export type Validation = { ok: true; value: Parsed } | { ok: false; errors: stri
 
 export interface ValidationContext {
   rules: Rules
-  /** 模型输入的数据区全文：候选中引用的 issue 编号必须在其中出现过。 */
-  inputText: string
+  /**
+   * 模型输入的数据区全文：候选中引用的 issue 编号必须在其中出现过。
+   * 为 null 时跳过这一项：读取缓存条目时手里没有原始输入，而同一个 key 的输入在生成时已经校验过。
+   */
+  inputText: string | null
 }
 
 const CANDIDATE_KEYS = ['type', 'scope', 'subject', 'body', 'breakingChange']
@@ -106,7 +112,7 @@ export function validateOutput(raw: unknown, ctx: ValidationContext): Validation
 
   const candidate: Candidate = { type: type as string, scope, subject: (subject as string).trim(), body: body.map((b) => b.trim()), breakingChange }
   const everything = [candidate.subject, ...candidate.body, candidate.breakingChange ?? ''].join('\n')
-  const unknownRefs = issueRefs(everything).filter((r) => !inputText.includes(r))
+  const unknownRefs = inputText === null ? [] : issueRefs(everything).filter((r) => !inputText.includes(r))
   if (unknownRefs.length > 0) errors.push(`引用了输入中不存在的 issue 编号：${unknownRefs.join(', ')}`)
 
   const script = requiredScript(rules.language)

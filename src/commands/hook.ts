@@ -4,7 +4,7 @@ import type { Io } from '../main.ts'
 import { prepareCommitMsg } from '../hook/prepare.ts'
 import { startProgress, type Progress } from '../util/progress.ts'
 import { loadContext } from './context.ts'
-import { runGeneration } from './generate-flow.ts'
+import { generateCached } from '../prewarm/cached.ts'
 
 export async function hookCommand(cmd: Command, io: Io): Promise<number> {
   if (cmd.kind !== 'hook') return 2
@@ -20,8 +20,10 @@ export async function hookCommand(cmd: Command, io: Io): Promise<number> {
       env: ctx.env,
       diag: (m) => io.err(`ai-commit: ${m}`),
       generate: async ({ snapshot }) => {
-        const r = await runGeneration(ctx, snapshot, {
+        const r = await generateCached(ctx, snapshot, {
+          installId: cmd.installId,
           signal: ac.signal,
+          onWait: () => { ui.progress?.stop(); ui.progress = startProgress('正在等待同一快照的预热结果…') },
           onStart: (name) => { ui.progress?.stop(); ui.progress = startProgress(`正在用 ${name} 生成提交信息…`) },
           onNotice: (m) => { ui.progress?.stop(); ui.progress = null; io.err(`ai-commit: ${m}`) },
         })

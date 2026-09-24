@@ -61,6 +61,32 @@ export function prepareCommitMsgTemplate(p: TemplateParams): string {
   ])
 }
 
+/**
+ * post-index-change（D3）：hook 不读参数，收到调用就视为"暂存内容可能变了"的提示，在 shell 内按顺序过滤，任一项命中就以 0 退出：
+ * 跳过开关或重入标记 → 执行时授权（aicommit.prewarm 为 true）→ 特殊流程（逐行读取 --git-path 的结果，路径可能含空格）→
+ * 暂存区与 HEAD 有差异（plumbing 并禁用外部转换；只有退出码 1 才继续，首次提交没有 HEAD 时静默跳过）。
+ * 全部通过后以后台方式启动主程序的 warm 入口并立即返回；运行时路径失效时静默以 0 退出。
+ */
+export function postIndexChangeTemplate(p: TemplateParams): string {
+  return assemble('post-index-change', p.installId, [
+    '# 关闭预热：git ai-commit prewarm off',
+    'case "${AI_COMMIT_SKIP:-}" in ""|0) ;; *) exit 0 ;; esac',
+    '[ -n "${AI_COMMIT_ACTIVE:-}" ] && exit 0',
+    '[ "$(git config --bool aicommit.prewarm 2>/dev/null)" = true ] || exit 0',
+    'git rev-parse --path-format=absolute --git-path MERGE_HEAD --git-path CHERRY_PICK_HEAD --git-path REVERT_HEAD \\',
+    '  --git-path rebase-merge --git-path rebase-apply --git-path sequencer 2>/dev/null | while IFS= read -r p; do',
+    '  if [ -e "$p" ]; then exit 1; fi',
+    'done || exit 0',
+    'git diff-index --cached --quiet --no-textconv --no-ext-diff HEAD -- >/dev/null 2>&1',
+    '[ $? -eq 1 ] || exit 0',
+    `node=${shQuote(p.node)}`,
+    `script=${shQuote(p.script)}`,
+    'if [ ! -x "$node" ] || [ ! -f "$script" ]; then exit 0; fi',
+    `"$node" "$script" warm --install-id ${shQuote(p.installId)} </dev/null >/dev/null 2>&1 &`,
+    'exit 0',
+  ])
+}
+
 /** 需要手动接入（hooks 目录被管理器或共享目录接管）时，给用户的一行调用。 */
 export function manualPrepareLine(p: TemplateParams): string {
   return `${shQuote(p.node)} ${shQuote(p.script)} hook prepare-commit-msg --install-id manual -- "$@"`

@@ -11,6 +11,7 @@ export interface GenerateOptions {
   rules: Rules
   deadline: number
   signal: AbortSignal
+  onSpawn?: (pid: number) => void
 }
 
 export type GenResult =
@@ -39,7 +40,7 @@ export async function generateWith(backend: Backend, input: ModelInput, opts: Ge
   const ctx = { rules: opts.rules, inputText: input.data }
   let prompt = input.prompt
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await backend.invoke({ prompt, deadline: opts.deadline, signal: opts.signal })
+    const r = await backend.invoke({ prompt, deadline: opts.deadline, signal: opts.signal, ...(opts.onSpawn ? { onSpawn: opts.onSpawn } : {}) })
     if (!r.ok) return { ok: false, failure: r.failure, backend: backend.name }
     const parsed = r.output.kind === 'json' ? { ok: true as const, value: r.output.value } : parseJsonText(r.output.text)
     let errors: string[]

@@ -50,14 +50,85 @@ export function gitEnv(baseEnv: NodeJS.ProcessEnv, baseCwd: string): NodeJS.Proc
   return env
 }
 
+/** 一次 rev-parse 查询的常用 Git 路径（绝对路径）。 */
+export const GIT_PATH_NAMES = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer', 'ai-commit', 'hooks'] as const
+export type GitPathName = (typeof GIT_PATH_NAMES)[number]
+
+export interface GitPaths {
+  /** worktree 顶层；不在 worktree 中时为 null。 */
+  toplevel: string | null
+  commonDir: string
+  path: Record<GitPathName, string>
+}
+
+export interface ConfigEntry {
+  scope: string
+  /** 节名与键名为小写（子节保持原样），与 git config --list 一致。 */
+  key: string
+  value: string
+}
+
 export class Git {
   readonly cwd: string
   readonly env: NodeJS.ProcessEnv
+  // 同一个 Git 对象内复用的查询结果：macOS 的 /usr/bin/git 是 xcrun 转发层，实测每次启动约 26ms，命中路径要尽量少调 git
+  private pathsCache: GitPaths | null | undefined
+  private configCache: ConfigEntry[] | undefined
 
   /** cwd 通常是 hook 启动时的工作目录（worktree 顶层）；相对的 Git 路径变量按它解析。 */
   constructor(cwd: string = process.cwd(), baseEnv: NodeJS.ProcessEnv = process.env) {
     this.cwd = resolve(cwd)
     this.env = gitEnv(baseEnv, this.cwd)
+  }
+
+  /** 一次 rev-parse 取得 worktree 顶层与常用 --git-path（结果在本对象内复用）；不在仓库中时返回 null。 */
+  paths(): GitPaths | null {
+    if (this.pathsCache !== undefined) return this.pathsCache
+    const query = (withTop: boolean) => this.run(['rev-parse', '--path-format=absolute', ...(withTop ? ['--show-toplevel'] : []), '--git-common-dir',
+      ...GIT_PATH_NAMES.flatMap((n) => ['--git-path', n])], { allowFail: true })
+    let r = query(true)
+    let withTop = true
+    if (r.status !== 0) {
+      r = query(false)
+      withTop = false
+    }
+    const lines = r.stdout.split('\n').filter((l) => l !== '')
+    const expected = GIT_PATH_NAMES.length + 1 + (withTop ? 1 : 0)
+    if (r.status !== 0 || lines.length !== expected) return (this.pathsCache = null)
+    const rest = withTop ? lines.slice(1) : lines
+    const path = Object.fromEntries(GIT_PATH_NAMES.map((n, i) => [n, rest[i + 1]!])) as Record<GitPathName, string>
+    return (this.pathsCache = { toplevel: withTop ? lines[0]! : null, commonDir: rest[0]!, path })
+  }
+
+  /** 一次读取全部配置及其作用域（结果在本对象内复用）。 */
+  configEntries(): ConfigEntry[] {
+    if (this.configCache !== undefined) return this.configCache
+    const r = this.run(['config', '-z', '--list', '--show-scope'], { allowFail: true })
+    const entries: ConfigEntry[] = []
+    if (r.status === 0) {
+      const parts = r.stdout.split('\0')
+      for (let i = 0; i + 1 < parts.length; i += 2) {
+        const kv = parts[i + 1]!
+        const nl = kv.indexOf('\n')
+        entries.push({ scope: parts[i]!, key: nl < 0 ? kv : kv.slice(0, nl), value: nl < 0 ? 'true' : kv.slice(nl + 1) })
+      }
+    }
+    return (this.configCache = entries)
+  }
+
+  /** 配置项的生效值（同名多处定义时最后一处生效）；scope 指定时只看该作用域。键名按节名与键名不区分大小写比较。 */
+  configGet(key: string, scope?: string): string | null {
+    const dot = key.lastIndexOf('.')
+    const first = key.indexOf('.')
+    const norm = (k: string) => {
+      const f = k.indexOf('.')
+      const l = k.lastIndexOf('.')
+      return f === l ? k.toLowerCase() : `${k.slice(0, f).toLowerCase()}${k.slice(f, l)}${k.slice(l).toLowerCase()}`
+    }
+    const want = first === dot ? key.toLowerCase() : norm(key)
+    let value: string | null = null
+    for (const e of this.configEntries()) if (norm(e.key) === want && (scope === undefined || e.scope === scope)) value = e.value
+    return value
   }
 
   run(args: string[], opts: GitRunOptions = {}): GitResult {

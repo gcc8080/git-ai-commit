@@ -9,8 +9,8 @@ import type { Git } from './git.ts'
 export type CommentPrefix = { ok: true; prefix: string } | { ok: false; reason: string }
 
 export function commentPrefix(git: Git): CommentPrefix {
-  const str = git.tryText(['config', '--get', 'core.commentString'])
-  const chr = git.tryText(['config', '--get', 'core.commentChar'])
+  const str = git.configGet('core.commentString')
+  const chr = git.configGet('core.commentChar')
   const v = str ?? chr
   if (v === null) return { ok: true, prefix: '#' }
   if (v === '' || v.toLowerCase() === 'auto' || /[\n\r]/.test(v)) return { ok: false, reason: `无法确定注释字符（core.commentChar=${JSON.stringify(v)}）` }

@@ -16,6 +16,7 @@ export class UsageError extends Error {}
 export const USAGE = `用法：git ai-commit <命令> [选项]
 
 命令：
+  help                 显示本帮助（经 git 调用时用 git ai-commit help；--help 会被 git 改写成查找 man 手册）
   install              在当前仓库接入 hook
   uninstall            移除本工具写入的 hook 与状态目录
   prewarm on|off       开启或关闭预热（暂存时提前生成）

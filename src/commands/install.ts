@@ -1,52 +1,44 @@
 // install / uninstall（D18、D19）。
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Command } from '../cli/args.ts'
 import type { Io } from '../main.ts'
 import { Git } from '../git/git.ts'
-import { hooksLocation, stateDir, stateRoot, STATE_SUBDIRS, worktrees } from '../install/paths.ts'
-import { manualPrepareLine, parseOwnership, prepareCommitMsgTemplate, type HookName, type TemplateParams } from '../hook/templates.ts'
-import { isTaskProcess, terminateGroup } from '../proc/identity.ts'
+import { hooksLocation, stateRoot, worktrees } from '../install/paths.ts'
+import { ensureStateDirs, HOOK_NAMES, installedId, readHook, runtimePaths, writeHook } from '../install/hooks.ts'
+import { manualPrepareLine, parseOwnership, prepareCommitMsgTemplate, type TemplateParams } from '../hook/templates.ts'
+import { readRegistration, readRegistrations as readTaskRegistrations, statePaths } from '../prewarm/store.ts'
+import { holderOfTask, takeover } from '../prewarm/takeover.ts'
 import { loadMachineConfig } from '../config/machine.ts'
+import { gitTooOld, MIN_GIT, parseGitVersion } from '../compat.ts'
+import { PREWARM_NOTICE, prewarmSetting, writePrewarmHook } from './prewarm.ts'
 
-export const HOOK_NAMES: HookName[] = ['prepare-commit-msg', 'post-index-change']
+export { HOOK_NAMES, installedId, ensureStateDirs, runtimePaths, writeHook } from '../install/hooks.ts'
 
-export function runtimePaths(): { node: string; script: string } {
-  return { node: realpathSync(process.execPath), script: realpathSync(process.argv[1]!) }
-}
+/** 询问用户一个是否问题；非交互环境返回 null。 */
+export type Ask = (question: string) => Promise<boolean | null>
 
-function readHook(dir: string, name: string): string | null {
-  const f = join(dir, name)
-  return existsSync(f) ? readFileSync(f, 'utf8') : null
-}
-
-/** 已安装的安装标识（从本工具写入的 hook 的标记行读取）。 */
-export function installedId(hooksDir: string): string | null {
-  for (const name of HOOK_NAMES) {
-    const content = readHook(hooksDir, name)
-    const own = content === null ? null : parseOwnership(content)
-    if (own !== null) return own.installId
+export const ttyAsk: Ask = async (question) => {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) return null
+  const { createInterface } = await import('node:readline/promises')
+  const rl = createInterface({ input: process.stdin, output: process.stderr })
+  try {
+    const answer = (await rl.question(`${question} [y/N] `)).trim().toLowerCase()
+    return answer === 'y' || answer === 'yes'
+  } finally {
+    rl.close()
   }
-  return null
 }
 
-export function ensureStateDirs(worktree: string, installId: string, env: NodeJS.ProcessEnv): string {
-  const dir = stateDir(worktree, installId, env)
-  for (const sub of STATE_SUBDIRS) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
-  return dir
-}
-
-export function writeHook(dir: string, name: HookName, content: string): void {
-  mkdirSync(dir, { recursive: true })
-  const file = join(dir, name)
-  writeFileSync(file, content)
-  chmodSync(file, 0o755)
-}
-
-export async function installCommand(cmd: Command, io: Io, env: NodeJS.ProcessEnv = process.env, runtime = runtimePaths()): Promise<number> {
+export async function installCommand(cmd: Command, io: Io, env: NodeJS.ProcessEnv = process.env, runtime = runtimePaths(), ask: Ask = ttyAsk, cwd = process.cwd()): Promise<number> {
   if (cmd.kind !== 'install') return 2
-  const git = new Git(process.cwd(), env)
+  const git = new Git(cwd, env)
+  const gv = parseGitVersion(git.tryText(['version']) ?? '')
+  if (gv !== null && gitTooOld(gv)) {
+    io.err(`ai-commit: git ${gv.version} 低于要求的 ${MIN_GIT.join('.')}（需要 rev-parse --path-format），未安装。`)
+    return 1
+  }
   if (git.tryText(['rev-parse', '--git-dir']) === null) {
     io.err('ai-commit: 当前目录不在 git 仓库中')
     return 1
@@ -87,34 +79,30 @@ export async function installCommand(cmd: Command, io: Io, env: NodeJS.ProcessEn
     `已写入 ${join(loc.defaultDir, 'prepare-commit-msg')}（安装标识 ${installId}）。`,
     `注意：该 hooks 目录由本仓库的所有 worktree 共享。`,
   ].join('\n'))
+
+  // 预热（D15）：本机开关，默认关闭；未设置时交互式询问一次，非交互环境保持关闭
+  let prewarm = prewarmSetting(git)
+  if (prewarm === null) {
+    const answer = await ask('是否开启预热？开启后在暂存（git add）阶段就会把差异发送给后端，提前生成提交信息，提交时更快。')
+    if (answer !== null) {
+      git.run(['config', '--local', 'aicommit.prewarm', answer ? 'true' : 'false'])
+      prewarm = answer
+      if (answer) io.out(PREWARM_NOTICE)
+    } else {
+      io.out('预热未开启（默认关闭）。如需开启：git ai-commit prewarm on')
+    }
+  } else if (prewarm) {
+    io.out('aicommit.prewarm 已设置为 true：直接启用预热（安装 post-index-change）。关闭预热：git ai-commit prewarm off')
+  }
+  if (prewarm === true) {
+    const w = writePrewarmHook(loc.defaultDir, params(installId))
+    if (!w.ok) io.err(`ai-commit: ${w.reason}；预热需要该 hook，本次未启用预热。`)
+  }
   const machine = loadMachineConfig(env)
   if (!machine.exists || machine.config.defaultProfile === null) {
     io.out(`尚未配置 profile：请在 ${machine.path} 中配置 profiles 与 defaultProfile（参见 README），或运行 git ai-commit doctor 查看。`)
   }
   return 0
-}
-
-interface Registration {
-  pid: number
-  pgid: number
-  token: string
-}
-
-function readRegistrations(dir: string): Registration[] {
-  const regs: Registration[] = []
-  for (const sub of ['tasks', 'locks']) {
-    const d = join(dir, sub)
-    if (!existsSync(d)) continue
-    for (const name of readdirSync(d)) {
-      try {
-        const r = JSON.parse(readFileSync(join(d, name), 'utf8')) as Partial<Registration>
-        if (typeof r.pid === 'number' && typeof r.pgid === 'number' && typeof r.token === 'string') regs.push(r as Registration)
-      } catch {
-        // 写到一半或损坏的登记文件：忽略
-      }
-    }
-  }
-  return regs
 }
 
 /** 卸载一个 worktree 中某个安装的状态目录（D19）：先改名使其失效，再终止登记的任务并确认退出，最后删除。 */
@@ -125,9 +113,10 @@ export async function removeState(worktree: string, installId: string, env: Node
   const doomed = join(root, `${installId}.removing-${randomBytes(4).toString('hex')}`)
   renameSync(dir, doomed)
   let unconfirmed = 0
-  for (const reg of readRegistrations(doomed)) {
-    if (!isTaskProcess(reg.pid, reg.token)) continue
-    if (!(await terminateGroup(reg.pgid))) unconfirmed++
+  const p = statePaths(doomed)
+  for (const reg of readTaskRegistrations(p)) {
+    const r = await takeover(holderOfTask(reg), { force: true, staleMs: 0 }, () => readRegistration(p, reg.token)?.backend)
+    if (r === 'unconfirmed') unconfirmed++
   }
   rmSync(doomed, { recursive: true, force: true })
   try {
