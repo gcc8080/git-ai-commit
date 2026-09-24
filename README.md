@@ -14,15 +14,17 @@
 
 ### 已验证的平台与版本
 
-| 项目 | 已验证版本 |
-|---|---|
-| 平台 | macOS（Linux 尚未验证） |
-| Node | 22.19.0（要求 ≥ 22.18） |
-| git | 2.50.1（要求 ≥ 2.31） |
-| claude | 2.1.281 |
-| codex | 0.156.1 |
-| pi | 0.87.1 |
-| opencode | 1.18.32 |
+| 项目 | macOS | Linux（Ubuntu 24.04，x86_64） |
+|---|---|---|
+| Node（要求 ≥ 22.18） | 22.19.0 | 22.22.2 |
+| git（要求 ≥ 2.31） | 2.50.1 | 2.43.0 |
+| claude | 2.1.281 | 2.1.281 |
+| codex | 0.156.1 | 0.156.1（未跑合同测试） |
+| pi | 0.87.1 | 0.87.1（未跑合同测试） |
+| opencode | 1.18.32 | 1.18.32（未跑合同测试） |
+
+Linux 上的 codex、pi、opencode 只验证了 `doctor` 的版本与兼容性判定和登录状态识别：验证环境访问不了这三个后端的服务，
+它们的合同测试还没有在 Linux 上运行。
 
 这些 CLI 更新很频繁。版本不在上表中、但必需的限制参数都还在时，照常调用，`git ai-commit doctor` 把它标为"未验证"；
 缺少任一必需参数时判为"不兼容"，不会调用。
@@ -187,7 +189,6 @@ hook 里记录的是安装时 Node 与脚本的绝对路径。升级、切换或
 - opencode 没有关闭会话记录的参数：本工具在每次调用后删除本次会话，调用被中断时可能残留，`doctor` 会列出。
 - codex 以 `--ignore-user-config` 运行：`~/.codex/config.toml` 中自定义的 model provider 不可用。
 - 仓库还没有任何提交时不预热，第一次提交走同步生成。
-- Linux 尚未验证。
 
 ## 开发
 
@@ -195,6 +196,7 @@ hook 里记录的是安装时 Node 与脚本的绝对路径。升级、切换或
 npm ci
 npm test                                   # 构建并运行单元测试与集成测试
 AI_COMMIT_CONTRACT=1 npm test              # 另外运行合同测试（真实调用本机的后端，会消耗额度）
+npm run build && AI_COMMIT_CONTRACT=1 node --test --test-concurrency=1 --test-name-pattern="[Cc]laude" "test/contract/*.test.ts"   # 只运行 claude 的合同测试
 npm run build && AI_COMMIT_PERF=1 node --test --test-concurrency=1 "test/perf/*.test.ts"   # 性能测量（单独运行）
 ```
 
