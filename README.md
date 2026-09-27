@@ -202,4 +202,7 @@ npm run build && AI_COMMIT_PERF=1 node --test --test-concurrency=1 "test/perf/*.
 
 合同测试观察后端子进程时依赖 `ps`（Linux 上需要安装 procps）；单元测试与集成测试在有 `/proc` 的系统上不依赖它。
 
+GitHub Actions（`.github/workflows/test.yml`）在推送到 main 与每个 PR 上，用 Linux（ubuntu-latest）分别以 Node 22.18.0 与最新的
+22.x 运行 `npm run typecheck` 与 `npm test`；合同测试与性能测量不在 CI 中运行。
+
 规格在 `openspec/specs/`；设计文档、提案与任务清单已归档在 `openspec/changes/archive/2026-09-24-ai-commit-message/`。
