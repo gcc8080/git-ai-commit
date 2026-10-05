@@ -1,0 +1,42 @@
+# 在 Linux 上运行类型检查、单元测试与集成测试。
+# 合同测试（AI_COMMIT_CONTRACT=1）真实调用后端，需要后端 CLI 与登录凭证；性能测量（AI_COMMIT_PERF=1）对机器负载敏感：
+# 二者都不在这里运行，npm test 会按开关把它们记为跳过。
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # 只取消同一个 PR 上被新推送取代的运行；main 上的每次推送都跑完
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Linux / Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.18.0 是 engines 声明的下限（构建与测试直接运行 TypeScript 源码，类型剥离从该版本起默认开启）；22 取最新的 22.x
+        node: ['22.18.0', '22']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          # 不用 runner 预装的 22.x，按版本清单取最新（对精确版本 22.18.0 不起作用）
+          check-latest: true
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

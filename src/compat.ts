@@ -3,8 +3,8 @@
 export const MIN_NODE_MAJOR = 22
 /** git：rev-parse --path-format（2.31）与 config --show-scope（2.26）。 */
 export const MIN_GIT: readonly [number, number] = [2, 31]
-/** 跑过全部测试与合同测试的版本。 */
-export const RUNTIME_BASELINE = { node: ['22.19.0'], git: ['2.50.1'] } as const
+/** 跑过全部测试与合同测试的版本：前一个来自 macOS，后一个来自 Linux（Linux 上只跑了 claude 的合同测试，见 README）。 */
+export const RUNTIME_BASELINE = { node: ['22.19.0', '22.22.2'], git: ['2.50.1', '2.43.0'] } as const
 
 /** 从 `git version 2.50.1 (Apple Git-155)` 之类的输出中取出版本号。 */
 export function parseGitVersion(out: string): { version: string; major: number; minor: number } | null {

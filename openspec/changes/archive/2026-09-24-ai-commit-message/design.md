@@ -40,7 +40,8 @@ claude 2.1.280    codex 0.156.0    opencode 1.18.32    pi 0.87.1
 - 这些 CLI 会自动更新：codex 在设计期间从 0.155.1（2026-09-22）自动升级到了 0.156.0（2026-09-23）。
 - 本机全局配置 `commit.template = ~/.stCommitMsg`（0 字节，SourceTree 的惯例配置）。因此本机**每一次**
   `git commit` 传给 `prepare-commit-msg` 的来源参数都是 `template`。
-- 第一版的合同测试基线就是上述版本；兼容性判定见 D7。第一版支持 macOS（已验证）与 Linux（目标平台，待验证）。
+- 第一版的合同测试基线就是上述版本；兼容性判定见 D7。第一版支持 macOS（已验证）与 Linux（已在 Ubuntu 24.04 上验证，
+  范围见 Open Questions）。
 
 ### 延迟与成本 [实测，2026-09-22，单次采样]
 
@@ -403,7 +404,8 @@ MCP 诱饵服务器（一启动就写标记文件）、claude 的 SessionStart h
   schema 校验手写窄类型 parse（不需要 zod），East Asian Width 自带范围表（不需要 string-width）；esbuild 打包成单文件。
 - **git ≥ 2.31**（实施期补充）：路径查询依赖 `rev-parse --path-format=absolute`（2.31），配置读取依赖 `config --show-scope`（2.26）。
   更旧的 git 会让路径查询失败、主程序一律放行，`install` 因此拒绝安装，`doctor` 报告为问题。
-- **兼容性基线**（19.2）：跑过全部测试与合同测试的版本记录在 `src/compat.ts`（Node 22.19.0、git 2.50.1）与
+- **兼容性基线**（19.2）：跑过全部测试与合同测试的版本记录在 `src/compat.ts`（macOS 上的 Node 22.19.0、git 2.50.1；
+  Linux 上的 Node 22.22.2、git 2.43.0，其中 Linux 只跑了 claude 的合同测试）与
   `src/backend/capability.ts`（claude 2.1.281、codex 0.156.1、pi 0.87.1、opencode 1.18.32）；`doctor` 对基线内的版本显示
   "已验证"/"兼容"，对基线外但参数齐全的后端版本显示"未验证"。
 - 零依赖的理由：node 空脚本启动 60–68ms [实测]，每多一个 require 都会抬高它。缓存命中路径的预算见 D17。
@@ -704,8 +706,8 @@ hook 时一致，shell 也不需要复刻主程序的判定逻辑。
   数据，目前没有；本机配置 `debounceMs` 可调。
 - （已决定）缓存容量：每个 worktree 200 条、保留 30 天（D16，条目实测约 300 字节）。
 - （已解决）能力矩阵中"待核实"的项已由 13.2 的合同测试核实，结果与由此做出的改正见 D7。
-- Linux 平台的验证（19.1，尚未完成）：实现阶段没有可用的 Linux 环境（尝试的远程运行实际仍在这台 macOS 上执行）。测试与合同测试
-  只在 macOS 上运行过，另用 dash 作为 `/bin/sh` 跑过一遍全量测试。已按梳理处理的差异：
+- Linux 平台的验证（19.1，部分完成：还差 codex、pi、opencode 的合同测试）：实现阶段没有可用的 Linux 环境（尝试的远程运行实际
+  仍在这台 macOS 上执行），测试与合同测试只在 macOS 上运行过，另用 dash 作为 `/bin/sh` 跑过一遍全量测试。实施期按梳理处理的差异：
   - 进程命令行：有 `/proc` 时读 `/proc/<pid>/cmdline`，否则用 `ps -ww`。procps 的 `ps` 在输出被重定向时可能截断，位于命令行末尾的
     任务令牌被截掉后，活着的任务会被误判为已退出。
   - 僵尸进程：进程组里只剩尚未被回收的僵尸时，`kill(-pgid, 0)` 仍报告组存在（Linux 上成功，macOS 上返回 EPERM，已实测）。在不回收
@@ -713,4 +715,26 @@ hook 时一致，shell 也不需要复刻主程序的判定逻辑。
     其他系统用 `ps`）；测试中判断进程是否存活也改为识别僵尸。
   - git 低于 2.31 时拒绝安装（D10）；hook 模板只用 POSIX sh 语法，诊断输出用 `printf`（dash 的 `echo` 会解释反斜杠）。
   - 构建与测试需要 Node ≥ 22.18；集成测试在有 `/proc` 的系统上不依赖 procps，合同测试仍需要 `ps`。
-  仍需在 Linux 上实际运行一遍。
+
+  之后在 Linux 上实际运行 [实测，2026-09-24]：Ubuntu 24.04.4（x86_64，内核 6.18，`/bin/sh` 为 dash），Node 22.22.2，git 2.43.0，
+  procps-ng 4.0.4；四个后端用 npm 安装基线版本（claude 2.1.281、codex 0.156.1、pi 0.87.1、opencode 1.18.32）。
+  - 单元测试与集成测试全部通过（312 个，另有 19 个合同测试与性能测试按开关跳过）：以 root 连续 5 轮；以普通用户 1 轮，PATH 中去掉
+    `ps` 等 procps 命令后再 1 轮；4 个核全部占满时 2 轮；在 PID 命名空间里以不回收孤儿的 node 作为 PID 1 时 3 轮（每轮结束时
+    PID 1 名下积累 60 个未回收的僵尸）。没有出现偶发失败。
+  - 僵尸进程组：`kill(-pgid, 0)` 对只剩僵尸的进程组在 Linux 上返回成功（用例诊断为"仍存在"），`groupAlive` 按 `/proc` 判为已退出。
+    验证所用容器的 PID 1 会回收孤儿，但有约 1.7s 的延迟；完全不回收的情形由上面的 PID 命名空间覆盖。
+  - `ps` 截断：procps-ng 4.0.4 在输出被重定向时没有截断（1336 字符的命令行完整输出）；Linux 上本工具读 `/proc`，不受影响。
+  - 性能（15.4、17.3，方法同 D3 与 D17，各三轮）：`git add` 不装 hook 4.1–5.5ms；预热关闭 +3.7–4.3ms；全部通过 +9.9–10.9ms。
+    缓存命中路径的中位数：经 git 调用 79–87ms，直接调用 76–82ms。Linux 的 git 没有 xcrun 转发层，均远低于预算。
+  - 合同测试：claude 的 5 个全部通过（7.3 的真实提交、13.2 能力矩阵的两项、11.1 第一期端到端、14.3 嵌套会话）；端到端中需要
+    生成的提交每次 3.0–4.9s，主程序只启动一次。codex、pi、opencode 的合同测试没有运行：验证环境的网络策略拒绝访问
+    api.openai.com、chatgpt.com、api.deepseek.com、opencode.ai 与 models.dev，也没有这三个后端的登录凭证。
+  - 这三个后端只验证了不发起模型请求的部分：`doctor` 把三个基线版本的 Linux 版都判为"兼容"（帮助文本中的限制参数齐全，codex 的
+    `--strict-config` 没有报告未识别的键）；登录状态识别正确（codex 未登录，pi 的 provider 为 `credentials_not_configured`，
+    opencode 没有已存储的凭证）；opencode 的 `debug config` 能解析出用户配置中的 MCP 服务器名称（含空格的名称也能解析）。
+  - codex 0.156.1 在 Linux 上提示找不到 bubblewrap（只读沙箱的依赖）后继续运行；安装 bubblewrap 0.9.0 后提示消失。本工具已关闭
+    codex 的 shell 工具，但没有 bubblewrap 时只读沙箱是否仍然生效，要等 codex 的能力矩阵在 Linux 上运行后才能确认。
+  - 在临时 HOME 中按 README 从零操作一遍（克隆与构建、`npm install -g .`、`install`、`doctor`、`preview`、各种 `git commit`、
+    `prewarm on` 后命中预热结果、`prewarm off`、`uninstall`、`npm uninstall -g`），结果与 README 一致；开启预热后 `git add` 为
+    16ms，暂存约 5s 后缓存就绪，随后的 `git commit --no-edit` 为 107ms。
+  没有发现需要修改代码的 Linux 差异。剩下的是在能访问这三个后端服务、并已登录的 Linux 环境中运行它们的合同测试。
